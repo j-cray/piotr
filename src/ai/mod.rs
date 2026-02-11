@@ -2,8 +2,8 @@ use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+// use std::sync::Arc;
+// use tokio::sync::Mutex;
 
 const API_ENDPOINT: &str = "https://aiplatform.googleapis.com/v1";
 const MODEL_ID: &str = "gemini-3-flash-preview"; // As requested
