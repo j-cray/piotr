@@ -29,6 +29,7 @@
               extensions = ["rust-src" "rust-analyzer" "clippy"];
             })
             google-cloud-sdk # Essential (gcloud)
+            signal-cli # Signal Messenger CLI
           ];
 
           shellHook = ''

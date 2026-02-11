@@ -15,9 +15,9 @@ This project aims to build a Rust-based Signal Messenger bot that leverages Goog
 
 ### Phase 2: Signal Interface Implementation
 **Goal:** Enable secure message sending and receiving.
-- **Milestone 2.1:** Evaluate Signal integration options (e.g., `presage` crate vs. `signal-cli` wrapper).
-    - *Decision Point:* Start with `presage` for a pure Rust implementation. Fallback to `signal-cli-json-rpc` if complexity is too high.
-- **Milestone 2.2:** Implement device registration/linking flow (QR code handling).
+- **Milestone 2.1:** Configure `signal-cli` in Nix environment.
+    - *Decision Point:* Switched to `signal-cli` (daemon mode) via JSON-RPC as the Rust crate strategy was ambiguous.
+- **Milestone 2.2:** Implement `SignalClient` wrapper in Rust (spawning `signal-cli` process).
 - **Milestone 2.3:** Create a robust message listener loop.
 - **Milestone 2.4:** Implement message sending capability.
 
@@ -48,9 +48,10 @@ This project aims to build a Rust-based Signal Messenger bot that leverages Goog
 - [ ] Initialize `cargo init`.
 
 ### Phase 2: Signal Layer
-- [ ] Add dependencies: `presage` (or `signal-cli-json-rpc`), `tokio`, `anyhow`.
-- [ ] Create `src/signal/mod.rs` to encapsulate Signal logic.
-- [ ] Implement `SignalService` trait.
+- [ ] Add `signal-cli` to `flake.nix`.
+- [ ] Remove `presage` from `Cargo.toml`.
+- [ ] Implement `SignalClient` struct to spawn/manage `signal-cli`.
+- [ ] Implement `receive_messages` loop parsing JSON-RPC.
 
 ### Phase 3: AI Layer
 - [ ] Add dependencies: `reqwest`, `serde`, `serde_json`, `gcp-auth` (or similar).

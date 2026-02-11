@@ -13,7 +13,7 @@ google-cloud-auth = "0.13" # Using 0.13 as checked or use exact latest compatibl
 dotenv = "0.15"
 log = "0.4"
 env_logger = "0.10"
-presage = "0.3.0"
+# presage = "0.3.0" # Removed: incorrect crate
 
 # Future proofing deps
 config = "0.13"
