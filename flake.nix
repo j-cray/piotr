@@ -7,27 +7,34 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, ... }:
-    flake-utils.lib.eachDefaultSystem (system:
-      let
-        overlays = [ (import rust-overlay) ];
+  outputs = {
+    self,
+    nixpkgs,
+    rust-overlay,
+    flake-utils,
+    ...
+  }:
+    flake-utils.lib.eachDefaultSystem (
+      system: let
+        overlays = [(import rust-overlay)];
         pkgs = import nixpkgs {
           inherit system overlays;
         };
-      in
-      {
+      in {
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             openssl
             pkg-config
             (rust-bin.stable.latest.default.override {
-              extensions = [ "rust-src" "rust-analyzer" "clippy" ];
+              extensions = ["rust-src" "rust-analyzer" "clippy"];
             })
             google-cloud-sdk # Essential (gcloud)
           ];
 
           shellHook = ''
             export RUST_BACKTRACE=1
+            export GCP_PROJECT_ID=piotr-487123
+            export CLOUDSDK_CORE_PROJECT=piotr-487123
           '';
         };
       }
