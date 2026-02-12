@@ -45,34 +45,60 @@ async fn main() -> anyhow::Result<()> {
             let source = envelope.source.clone();
             if let Some(data) = envelope.data_message {
                 if let Some(text) = data.message {
-                    info!("Processing text from {}: {}", source, text);
+                    let is_group = data.group_info.is_some();
+                    let text_lower = text.trim().to_lowercase(); // Define text_lower here for use in closure/logic
 
-                    // Send Read Receipt
-                    if let Err(e) = signal_client.send_receipt(&source, envelope.timestamp).await {
-                        log::warn!("Failed to send read receipt: {:?}", e);
-                    }
-
-                    // Start Typing Indicator
-                    if let Err(e) = signal_client.send_typing(&source).await {
-                        log::warn!("Failed to send typing indicator: {:?}", e);
-                    }
-
-                    // AI Generation
-                    match ai_client.generate_content(&text).await {
-                        Ok(response) => {
-                            info!("AI Response: {}", response);
-
-                            // Stop Typing Indicator (optional, but good hygiene)
-                            let _ = signal_client.stop_typing(&source).await;
-
-                            if let Err(e) = signal_client.send_message(&source, &response).await {
-                                log::error!("Failed to send Signal response: {:?}", e);
+                    let (should_reply, prompt): (bool, String) = if is_group {
+                        if text_lower.starts_with("piotr") || text_lower.starts_with("hey piotr") {
+                            (true, text.clone())
+                        } else {
+                            // Random joke logic
+                            use rand::RngExt; // Import RngExt for random_bool
+                            let mut rng = rand::rng();
+                            if rng.random_bool(0.02) {
+                                // Actually, user requested "occasionally". Let's set it to 2%
+                                // But for testing I might want it higher? sticking to 2%
+                                (true, "Tell me a short, clean joke.".to_string())
+                            } else {
+                                (false, String::new())
                             }
                         }
-                        Err(e) => {
-                            log::error!("AI Error: {:?}", e);
-                             let _ = signal_client.stop_typing(&source).await;
+                    } else {
+                        (true, text.clone())
+                    };
+
+                    if should_reply {
+                         info!("Processing prompt from {}: {}", source, prompt); // Use 'prompt' instead of 'text'
+
+                        // Send Read Receipt
+                        if let Err(e) = signal_client.send_receipt(&source, envelope.timestamp).await {
+                            log::warn!("Failed to send read receipt: {:?}", e);
                         }
+
+                        // Start Typing Indicator
+                        if let Err(e) = signal_client.send_typing(&source).await {
+                            log::warn!("Failed to send typing indicator: {:?}", e);
+                        }
+
+                        // AI Generation
+                        match ai_client.generate_content(&prompt).await {
+                            Ok(response) => {
+                                info!("AI Response: {}", response);
+
+                                // Stop Typing Indicator (optional, but good hygiene)
+                                let _ = signal_client.stop_typing(&source).await;
+
+                                if let Err(e) = signal_client.send_message(&source, &response).await {
+                                    log::error!("Failed to send Signal response: {:?}", e);
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("AI Error: {:?}", e);
+                                 let _ = signal_client.stop_typing(&source).await;
+                            }
+                        }
+                    } else {
+                        info!("Ignoring message from {}: {} (No trigger)", source, text);
                     }
                 }
             }

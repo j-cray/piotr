@@ -46,6 +46,17 @@ pub struct Envelope {
 pub struct DataMessage {
     pub message: Option<String>,
     pub timestamp: u64,
+    #[serde(rename = "groupInfo")]
+    pub group_info: Option<GroupInfo>,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(dead_code)]
+pub struct GroupInfo {
+    #[serde(rename = "groupId")]
+    pub group_id: String,
+    #[serde(rename = "type")]
+    pub group_type: String,
 }
 
 #[allow(dead_code)]
