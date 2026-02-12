@@ -36,8 +36,8 @@ while [ -z "$URI" ]; do
         cat link_output.log
         exit 1
     fi
-    # Search for tsdevice protocol link
-    URI=$(grep -o "tsdevice:/?uuid=.*" link_output.log | head -n 1)
+    # Search for tsdevice or sgnl protocol link
+    URI=$(grep -o -E "(tsdevice:|sgnl://).*uuid=.*" link_output.log | head -n 1)
     sleep 1
 done
 
