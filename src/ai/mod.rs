@@ -1,12 +1,9 @@
+use serde::Deserialize;
+use serde_json::json;
 use anyhow::Result;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-// use std::sync::Arc;
-// use tokio::sync::Mutex;
 
-const API_ENDPOINT: &str = "https://aiplatform.googleapis.com/v1";
-const MODEL_ID: &str = "gemini-3-flash-preview"; // As requested
+const API_ENDPOINT: &str = "https://us-central1-aiplatform.googleapis.com/v1";
 
 #[derive(Clone)]
 pub struct VertexClient {
@@ -15,24 +12,13 @@ pub struct VertexClient {
     http_client: Client,
 }
 
-// Response structs
-#[derive(Debug, Deserialize)]
-struct GenerateContentResponse {
-    candidates: Option<Vec<Candidate>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Candidate {
-    content: Option<Content>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 pub struct Content {
-    pub parts: Vec<Part>,
     pub role: String,
+    pub parts: Vec<Part>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 pub struct Part {
     pub text: Option<String>,
 }
@@ -41,35 +27,20 @@ impl VertexClient {
     pub fn new(project_id: &str) -> Self {
         Self {
             project_id: project_id.to_string(),
-            location: "global".to_string(), // Trying global location
+            location: "global".to_string(), // Default, but overridden in methods
             http_client: Client::new(),
-            // token_manager: Arc::new(Mutex::new(TokenManager {})),
         }
     }
 
     async fn get_token(&self) -> Result<String> {
-        // Use gcloud auth print-access-token for simplicity in first pass dev
-        // For production, use google-cloud-auth crate properly.
-        // But since we have gcloud tool, let's try that first as a fallback if auth crate is complex.
-
-        // Use gcloud auth print-access-token for simplicity in first pass dev
-        // For production, use google-cloud-auth crate properly.
-        // But since we have gcloud tool, let's try that first as a fallback if auth crate is complex.
-        // Note: verify 0.13 API.
-        // If 0.13 is tricky, we might need to adjust.
-        // Let's assume standard google-cloud-auth usage for now.
-
-        // Actually, let's use the simplest reliable method:
-        // If GOOGLE_APPLICATION_CREDENTIALS is set, usage is easy.
-
-        // For now, let's shell out to gcloud for dev speed, it's robust in this env.
+        // Use gcloud auth print-access-token
         let output = tokio::process::Command::new("gcloud")
             .args(&["auth", "print-access-token"])
             .output()
             .await?;
 
         if !output.status.success() {
-             anyhow::bail!("Failed to get token via gcloud: {}", String::from_utf8_lossy(&output.stderr));
+            anyhow::bail!("Failed to get gcloud token: {:?}", String::from_utf8(output.stderr));
         }
 
         let token = String::from_utf8(output.stdout)?.trim().to_string();
@@ -80,12 +51,8 @@ impl VertexClient {
         let token = self.get_token().await?;
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.project_id, "us-central1", model // Force us-central1 for now as global might have issues with some models, or keep self.location? let's use self.location but ensure main sets it correctly.
+            API_ENDPOINT, self.project_id, "us-central1", model
         );
-        // actually self.location is "global". generic non-regional endpoints might be fine.
-        // But for Imagen, it's often regional. Let's trust self.location for now, but main.rs sets it to "global".
-        // "global" works for gemini-pro/flash.
-        // For Imagen, it might need "us-central1".
 
         let body = json!({
             "systemInstruction": {
@@ -126,15 +93,12 @@ impl VertexClient {
         Ok("No content generated".to_string())
     }
 
-    pub async fn generate_image(&self, prompt: &str) -> Result<Vec<u8>> {
+    pub async fn generate_image(&self, prompt: &str, model: &str) -> Result<Vec<u8>> {
         let token = self.get_token().await?;
-        // Imagen 2 (imagegeneration@006)
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:predict",
-            API_ENDPOINT, self.project_id, "us-central1", "imagegeneration@006"
+            API_ENDPOINT, self.project_id, "us-central1", model
         );
-        // Note: Imagen usually requires regional endpoint (us-central1). "global" might fail.
-        // Hardcoding us-central1 for image generation to be safe.
 
         let body = json!({
             "instances": [{ "prompt": prompt }],
@@ -176,7 +140,6 @@ impl VertexClient {
             parts: vec![Part { text: Some(prompt.to_string()) }],
         }];
 
-        // Use Flash for classification
         let token = self.get_token().await?;
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
@@ -185,7 +148,12 @@ impl VertexClient {
 
         let body = json!({
             "systemInstruction": {
-                "parts": [{ "text": "You are a router. Analyze the user's request. Return 'IMAGE' if asking to draw/generate picture. Return 'PRO' if complex reasoning/coding/math. Return 'FLASH' for casual chat. Output ONLY the keyword." }]
+                "parts": [{ "text": "You are a router. Analyze the user's request.
+                - Return 'IMAGE_4' if the user specifically asks for 'imagen 4', 'high quality', 'ultra realistic', '4k', or 'detailed' image.
+                - Return 'IMAGE_3' if the user asks to draw/generate an image but it is standard/fast/simple or asks for 'imagen 3'.
+                - Return 'PRO' if complex reasoning/coding/math.
+                - Return 'FLASH' for casual chat.
+                Output ONLY the keyword." }]
             },
             "contents": contents,
             "generationConfig": {

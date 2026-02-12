@@ -122,9 +122,11 @@ async fn main() -> anyhow::Result<()> {
                         };
                          info!("Classified intent: {}", intent);
 
-                        if intent == "IMAGE" {
+                        if intent.starts_with("IMAGE") {
                              // Image Generation
-                             match ai_client.generate_image(&prompt).await {
+                             let model = if intent == "IMAGE_4" { "imagen-4.0-generate-001" } else { "imagen-3.0-generate-001" };
+
+                             match ai_client.generate_image(&prompt, model).await {
                                  Ok(image_bytes) => {
                                      // Save to temp file
                                      let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
@@ -143,7 +145,7 @@ async fn main() -> anyhow::Result<()> {
                                  },
                                  Err(e) => {
                                      log::error!("Image generation failed: {:?}", e);
-                                     let _ = signal_client.send_message(&source, group_id, "I could not generate that image. I am sorry.", None).await;
+                                     let _ = signal_client.send_message(&source, group_id, &format!("I could not generate that image with {}. I am sorry.", model), None).await;
                                  }
                              }
                              // Stop typing
