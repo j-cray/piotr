@@ -160,11 +160,12 @@ impl VertexClient {
             "systemInstruction": {
                 "parts": [{ "text": "You are a classification router. Analyze the user's request and categorize it into one of these exact keywords:
                 - IMAGE_4: If request asks for 'high quality', 'ultra realistic', '4k', or 'detailed' image/drawing/photo.
-                - IMAGE_3: If request asks to 'draw', 'generate', 'create', 'sketch', or 'paint' an image/picture/photo/art/robot.
+                - IMAGE_3: If request asks to 'draw', 'generate', 'create', 'sketch', or 'paint' an image/picture/photo/art/robot, OR specifically says 'generate an image'.
                 - PRO: If request involves complex reasoning, coding, math, or analysis.
                 - FLASH: For casual chat, greetings, or simple questions.
 
                 Input: 'draw a cat' -> Output: IMAGE_3
+                Input: 'generate an image of a dog' -> Output: IMAGE_3
                 Input: 'sketch a robot' -> Output: IMAGE_3
                 Input: 'hello' -> Output: FLASH
                 Input: 'code a snake game' -> Output: PRO
