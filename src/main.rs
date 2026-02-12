@@ -22,8 +22,8 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Initialize Signal service
-    // Placeholder phone number - user must configure this via env or config
-    let signal_phone = std::env::var("SIGNAL_PHONE_NUMBER").unwrap_or_else(|_| "+15555555555".to_string());
+    // Phone number must be configured via env (see .env)
+    let signal_phone = std::env::var("SIGNAL_PHONE_NUMBER").expect("SIGNAL_PHONE_NUMBER must be set in .env");
 
     let mut signal_client = match signal::SignalClient::new(&signal_phone).await {
         Ok(client) => client,
@@ -42,14 +42,17 @@ async fn main() -> anyhow::Result<()> {
         info!("Received Signal Message: {:?}", msg);
 
         if let Some(envelope) = msg.envelope {
+            let source = envelope.source.clone();
             if let Some(data) = envelope.data_message {
                 if let Some(text) = data.message {
-                    info!("Processing text: {}", text);
+                    info!("Processing text from {}: {}", source, text);
                     // AI Generation
                     match ai_client.generate_content(&text).await {
                         Ok(response) => {
                             info!("AI Response: {}", response);
-                            // TODO: Send response back via signal_client
+                            if let Err(e) = signal_client.send_message(&source, &response).await {
+                                log::error!("Failed to send Signal response: {:?}", e);
+                            }
                         }
                         Err(e) => log::error!("AI Error: {:?}", e),
                     }

@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::mpsc;
 use log::{info, error, warn};
@@ -108,5 +108,26 @@ impl SignalClient {
         Ok(rx)
     }
 
-    // TODO: Implement send_message using stdin
+    pub async fn send_message(&mut self, recipient: &str, message: &str) -> Result<()> {
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "method": "send",
+            "params": {
+                "recipient": [recipient],
+                "message": message
+            },
+            "id": "1"
+        });
+
+        if let Some(stdin) = &mut self.stdin {
+             let payload_str = serde_json::to_string(&payload)?;
+             stdin.write_all(payload_str.as_bytes()).await?;
+             stdin.write_all(b"\n").await?;
+             stdin.flush().await?;
+             info!("Sent message to {}", recipient);
+        } else {
+            return Err(anyhow::anyhow!("Signal stdin is not available"));
+        }
+        Ok(())
+    }
 }
