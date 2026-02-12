@@ -142,7 +142,7 @@ impl SignalClient {
     pub async fn send_message(&mut self, recipient: &str, group_id: Option<&str>, message: &str, attachment: Option<&str>) -> Result<()> {
         let mut params = if let Some(gid) = group_id {
             json!({
-                "groupId": [gid],
+                "groupId": gid,
                 "message": message
             })
         } else {
@@ -220,6 +220,7 @@ impl SignalClient {
     async fn send_payload(&mut self, payload: &Value) -> Result<()> {
         if let Some(stdin) = &mut self.stdin {
              let payload_str = serde_json::to_string(payload)?;
+             info!("Sending Signal RPC: {}", payload_str);
              stdin.write_all(payload_str.as_bytes()).await?;
              stdin.write_all(b"\n").await?;
              stdin.flush().await?;
