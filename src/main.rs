@@ -20,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
         role: "user".to_string(),
         parts: vec![ai::Part { text: Some("Hello! Are you working?".to_string()) }],
     };
-    match ai_client.generate_content(vec![test_content]).await {
+    match ai_client.generate_content(vec![test_content], "gemini-1.5-flash-001").await {
         Ok(response) => info!("Received response: {}", response),
         Err(e) => info!("Error querying Vertex AI: {:?}", e),
     }
@@ -112,39 +112,80 @@ async fn main() -> anyhow::Result<()> {
                             log::warn!("Failed to send typing indicator: {:?}", e);
                         }
 
-                        // AI Generation with History
-                        // Clone history to Vec for API
-                        let history_vec: Vec<ai::Content> = chat_history.iter().cloned().collect();
-
-                        match ai_client.generate_content(history_vec).await {
-                            Ok(response) => {
-                                info!("AI Response: {}", response);
-
-                                // Add Model Response to History
-                                let model_content = ai::Content {
-                                    role: "model".to_string(),
-                                    parts: vec![ai::Part { text: Some(response.clone()) }],
-                                };
-                                if let Some(hist) = history.get_mut(&context_key) {
-                                     hist.push_back(model_content);
-                                     if hist.len() > 20 { hist.pop_front(); }
-                                }
-
-                                // Stop Typing Indicator
-                                let _ = signal_client.stop_typing(&source, group_id).await;
-
-                                // Split and send up to 4 messages
-                                let chunks = textwrap::wrap(&response, 240);
-                                for (i, chunk) in chunks.iter().take(4).enumerate() {
-                                    if let Err(e) = signal_client.send_message(&source, group_id, &chunk).await {
-                                        log::error!("Failed to send Signal response part {}: {:?}", i + 1, e);
-                                    }
-                                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                                }
-                            }
+                        // Intent Classification
+                        let intent = match ai_client.classify_intent(&prompt).await {
+                            Ok(i) => i,
                             Err(e) => {
-                                log::error!("AI Error: {:?}", e);
-                                 let _ = signal_client.stop_typing(&source, group_id).await;
+                                log::error!("Intent classification failed: {:?}", e);
+                                "FLASH".to_string()
+                            }
+                        };
+                         info!("Classified intent: {}", intent);
+
+                        if intent == "IMAGE" {
+                             // Image Generation
+                             match ai_client.generate_image(&prompt).await {
+                                 Ok(image_bytes) => {
+                                     // Save to temp file
+                                     let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+                                     let filename = format!("/tmp/piotr_img_{}.png", timestamp);
+                                     if let Err(e) = std::fs::write(&filename, image_bytes) {
+                                         log::error!("Failed to write image to temp file: {:?}", e);
+                                         let _ = signal_client.send_message(&source, group_id, "I tried to draw something but my pencil broke (write error).", None).await;
+                                     } else {
+                                         // Send with attachment
+                                         if let Err(e) = signal_client.send_message(&source, group_id, "Here is your image.", Some(&filename)).await {
+                                             log::error!("Failed to send image: {:?}", e);
+                                         }
+                                         // Cleanup
+                                         let _ = std::fs::remove_file(&filename);
+                                     }
+                                 },
+                                 Err(e) => {
+                                     log::error!("Image generation failed: {:?}", e);
+                                     let _ = signal_client.send_message(&source, group_id, "I could not generate that image. I am sorry.", None).await;
+                                 }
+                             }
+                             // Stop typing
+                             let _ = signal_client.stop_typing(&source, group_id).await;
+
+                        } else {
+                            // Text Generation (Flash/Pro)
+                            let model_id = if intent == "PRO" { "gemini-1.5-pro-preview-0409" } else { "gemini-1.5-flash-001" };
+
+                            // Clone history to Vec for API
+                            let history_vec: Vec<ai::Content> = chat_history.iter().cloned().collect();
+
+                            match ai_client.generate_content(history_vec, model_id).await {
+                                Ok(response) => {
+                                    info!("AI Response: {}", response);
+
+                                    // Add Model Response to History
+                                    let model_content = ai::Content {
+                                        role: "model".to_string(),
+                                        parts: vec![ai::Part { text: Some(response.clone()) }],
+                                    };
+                                    if let Some(hist) = history.get_mut(&context_key) {
+                                         hist.push_back(model_content);
+                                         if hist.len() > 20 { hist.pop_front(); }
+                                    }
+
+                                    // Stop Typing Indicator
+                                    let _ = signal_client.stop_typing(&source, group_id).await;
+
+                                    // Split and send up to 4 messages
+                                    let chunks = textwrap::wrap(&response, 240);
+                                    for (i, chunk) in chunks.iter().take(4).enumerate() {
+                                        if let Err(e) = signal_client.send_message(&source, group_id, &chunk, None).await {
+                                            log::error!("Failed to send Signal response part {}: {:?}", i + 1, e);
+                                        }
+                                        tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!("AI Error: {:?}", e);
+                                     let _ = signal_client.stop_typing(&source, group_id).await;
+                                }
                             }
                         }
                     } else {

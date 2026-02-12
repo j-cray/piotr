@@ -139,8 +139,8 @@ impl SignalClient {
         Ok(rx)
     }
 
-    pub async fn send_message(&mut self, recipient: &str, group_id: Option<&str>, message: &str) -> Result<()> {
-        let params = if let Some(gid) = group_id {
+    pub async fn send_message(&mut self, recipient: &str, group_id: Option<&str>, message: &str, attachment: Option<&str>) -> Result<()> {
+        let mut params = if let Some(gid) = group_id {
             json!({
                 "groupId": [gid],
                 "message": message
@@ -151,6 +151,12 @@ impl SignalClient {
                 "message": message
             })
         };
+
+        if let Some(att) = attachment {
+             if let Some(obj) = params.as_object_mut() {
+                 obj.insert("attachment".to_string(), json!([att]));
+             }
+        }
 
         let payload = json!({
             "jsonrpc": "2.0",
