@@ -143,6 +143,7 @@ impl VertexClient {
     }
 
     pub async fn classify_intent(&self, prompt: &str) -> Result<String> {
+        log::info!("Classifying intent for prompt: '{}'", prompt);
         let contents = vec![Content {
             role: "user".to_string(),
             parts: vec![Part { text: Some(prompt.to_string()) }],
@@ -157,12 +158,18 @@ impl VertexClient {
 
         let body = json!({
             "systemInstruction": {
-                "parts": [{ "text": "You are a router. Analyze the user's request.
-                - Return 'IMAGE_4' if the user specifically asks for 'imagen 4', 'high quality', 'ultra realistic', '4k', or 'detailed' image.
-                - Return 'IMAGE_3' if the user asks to draw, generate, create, sketch, or paint an image/picture/photo/art.
-                - Return 'PRO' if complex reasoning/coding/math.
-                - Return 'FLASH' for casual chat.
-                Output ONLY the keyword." }]
+                "parts": [{ "text": "You are a classification router. Analyze the user's request and categorize it into one of these exact keywords:
+                - IMAGE_4: If request asks for 'high quality', 'ultra realistic', '4k', or 'detailed' image/drawing/photo.
+                - IMAGE_3: If request asks to 'draw', 'generate', 'create', 'sketch', or 'paint' an image/picture/photo/art/robot.
+                - PRO: If request involves complex reasoning, coding, math, or analysis.
+                - FLASH: For casual chat, greetings, or simple questions.
+
+                Input: 'draw a cat' -> Output: IMAGE_3
+                Input: 'sketch a robot' -> Output: IMAGE_3
+                Input: 'hello' -> Output: FLASH
+                Input: 'code a snake game' -> Output: PRO
+
+                Output ONLY the single keyword." }]
             },
             "contents": contents,
             "generationConfig": {
