@@ -90,7 +90,7 @@ impl VertexClient {
             }],
             "generationConfig": {
                 "temperature": 0.5,
-                "maxOutputTokens": 256
+                "maxOutputTokens": 8192
             }
         });
 
