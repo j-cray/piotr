@@ -16,7 +16,11 @@ async fn main() -> anyhow::Result<()> {
     let ai_client = ai::VertexClient::new(&project_id);
 
     info!("Sending test prompt to Vertex AI...");
-    match ai_client.generate_content("Hello! Are you working?").await {
+    let test_content = ai::Content {
+        role: "user".to_string(),
+        parts: vec![ai::Part { text: Some("Hello! Are you working?".to_string()) }],
+    };
+    match ai_client.generate_content(vec![test_content]).await {
         Ok(response) => info!("Received response: {}", response),
         Err(e) => info!("Error querying Vertex AI: {:?}", e),
     }
@@ -37,6 +41,11 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Signal listener started. Waiting for messages...");
 
+    // Conversation History: GroupID/Source -> VecDeque of Content
+    let mut history: std::collections::HashMap<String, std::collections::VecDeque<ai::Content>> = std::collections::HashMap::new();
+    // Re-read signal phone for quote check
+    let bot_number = std::env::var("SIGNAL_PHONE_NUMBER").unwrap_or_else(|_| "+12506417114".to_string());
+
     // Event Loop
     while let Some(msg) = rx.recv().await {
         info!("Received Signal Message: {:?}", msg);
@@ -46,18 +55,39 @@ async fn main() -> anyhow::Result<()> {
             if let Some(data) = envelope.data_message {
                 if let Some(text) = data.message {
                     let is_group = data.group_info.is_some();
-                    let text_lower = text.trim().to_lowercase(); // Define text_lower here for use in closure/logic
 
-                    let (should_reply, prompt): (bool, String) = if is_group {
-                        if text_lower.starts_with("piotr") || text_lower.starts_with("hey piotr") {
+                    // Determine Context Key for History (Group ID or Sender)
+                    let context_key = data.group_info.as_ref()
+                        .map(|g| g.group_id.clone())
+                        .unwrap_or_else(|| source.clone());
+
+                    // Add User Message to History
+                    let user_content = ai::Content {
+                        role: "user".to_string(),
+                        parts: vec![ai::Part { text: Some(text.clone()) }],
+                    };
+
+                    let chat_history = history.entry(context_key.clone()).or_insert_with(|| std::collections::VecDeque::new());
+                    chat_history.push_back(user_content);
+                    if chat_history.len() > 20 { chat_history.pop_front(); }
+
+                    let text_lower = text.trim().to_lowercase();
+
+                    // Check for Quote Trigger
+                    let is_quote_reply = if let Some(quote) = &data.quote {
+                        quote.author == bot_number
+                    } else {
+                        false
+                    };
+
+                    let (should_reply, prompt) = if is_group {
+                        if text_lower.starts_with("piotr") || text_lower.starts_with("hey piotr") || is_quote_reply {
                             (true, text.clone())
                         } else {
                             // Random joke logic
                             use rand::RngExt; // Import RngExt for random_bool
                             let mut rng = rand::rng();
                             if rng.random_bool(0.02) {
-                                // Actually, user requested "occasionally". Let's set it to 2%
-                                // But for testing I might want it higher? sticking to 2%
                                 (true, "Tell me a short, clean joke.".to_string())
                             } else {
                                 (false, String::new())
@@ -68,12 +98,11 @@ async fn main() -> anyhow::Result<()> {
                     };
 
                     if should_reply {
-                         info!("Processing prompt from {}: {}", source, prompt); // Use 'prompt' instead of 'text'
+                         info!("Processing prompt from {}: {}", source, prompt);
 
                         let group_id = data.group_info.as_ref().map(|g| g.group_id.as_str());
 
-                        // Send Read Receipt (Always to the source/sender for now, or use group logic?
-                        // signal-cli sendReceipt takes recipient. It might suffice to send to source.)
+                        // Send Read Receipt
                         if let Err(e) = signal_client.send_receipt(&source, envelope.timestamp).await {
                             log::warn!("Failed to send read receipt: {:?}", e);
                         }
@@ -83,10 +112,23 @@ async fn main() -> anyhow::Result<()> {
                             log::warn!("Failed to send typing indicator: {:?}", e);
                         }
 
-                        // AI Generation
-                        match ai_client.generate_content(&prompt).await {
+                        // AI Generation with History
+                        // Clone history to Vec for API
+                        let history_vec: Vec<ai::Content> = chat_history.iter().cloned().collect();
+
+                        match ai_client.generate_content(history_vec).await {
                             Ok(response) => {
                                 info!("AI Response: {}", response);
+
+                                // Add Model Response to History
+                                let model_content = ai::Content {
+                                    role: "model".to_string(),
+                                    parts: vec![ai::Part { text: Some(response.clone()) }],
+                                };
+                                if let Some(hist) = history.get_mut(&context_key) {
+                                     hist.push_back(model_content);
+                                     if hist.len() > 20 { hist.pop_front(); }
+                                }
 
                                 // Stop Typing Indicator
                                 let _ = signal_client.stop_typing(&source, group_id).await;
@@ -97,7 +139,6 @@ async fn main() -> anyhow::Result<()> {
                                     if let Err(e) = signal_client.send_message(&source, group_id, &chunk).await {
                                         log::error!("Failed to send Signal response part {}: {:?}", i + 1, e);
                                     }
-                                    // Optional: small delay to ensure order (Signal handles it usually, but 100ms doesn't hurt)
                                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                                 }
                             }

@@ -26,15 +26,15 @@ struct Candidate {
     content: Option<Content>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct Content {
-    parts: Vec<Part>,
-    role: String,
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Content {
+    pub parts: Vec<Part>,
+    pub role: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct Part {
-    text: Option<String>,
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Part {
+    pub text: Option<String>,
 }
 
 impl VertexClient {
@@ -76,7 +76,7 @@ impl VertexClient {
         Ok(token)
     }
 
-    pub async fn generate_content(&self, prompt: &str) -> Result<String> {
+    pub async fn generate_content(&self, contents: Vec<Content>) -> Result<String> {
         let token = self.get_token().await?;
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
@@ -87,10 +87,7 @@ impl VertexClient {
             "systemInstruction": {
                 "parts": [{ "text": "you are piotr, an eastern-european bot who is an eeyore-type figure, always down but always funny and witty. you are part of a group of friends in a group chat. make sure your responses are limited to 240 chars per message, you may send multiple responses in a row to get out a whole message up to 4 messages. be sparing with the jokes and aim to provide correct accurate facts when asked a question. wit is good but use it sparingly" }]
             },
-            "contents": [{
-                "role": "user",
-                "parts": [{ "text": prompt }]
-            }],
+            "contents": contents,
             "generationConfig": {
                 "temperature": 0.5,
                 "maxOutputTokens": 8192

@@ -48,6 +48,15 @@ pub struct DataMessage {
     pub timestamp: u64,
     #[serde(rename = "groupInfo")]
     pub group_info: Option<GroupInfo>,
+    pub quote: Option<Quote>,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(dead_code)]
+pub struct Quote {
+    pub id: u64,
+    pub author: String,
+    pub text: String,
 }
 
 #[derive(Deserialize, Debug)]
