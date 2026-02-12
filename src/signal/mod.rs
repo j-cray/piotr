@@ -17,6 +17,12 @@ struct JsonRpcRequest {
 }
 
 #[derive(Deserialize, Debug)]
+pub struct JsonRpcNotification {
+    pub method: String,
+    pub params: SignalMessage,
+}
+
+#[derive(Deserialize, Debug)]
 pub struct SignalMessage {
     pub envelope: Option<Envelope>,
     // Add other fields as needed from signal-cli output
@@ -88,17 +94,22 @@ impl SignalClient {
                 // But typically it sends events.
                 // Let's try to parse as generic JSON first to see what we get, or directly to SignalMessage
 
-                match serde_json::from_str::<SignalMessage>(&line) {
-                    Ok(msg) => {
-                        if let Err(e) = tx.send(msg).await {
-                            error!("Receiver dropped: {}", e);
-                            break;
-                        }
+                // Log raw line for debugging
+                info!("Raw Signal JSON: {}", line);
+
+                match serde_json::from_str::<JsonRpcNotification>(&line) {
+                    Ok(rpc) => {
+                         if rpc.method == "receive" {
+                            if let Err(e) = tx.send(rpc.params).await {
+                                error!("Receiver dropped: {}", e);
+                                break;
+                            }
+                         }
                     }
                     Err(e) => {
                         // It might be a response to a command, or just a log line if not pure JSON
                         // For now, log it.
-                        warn!("Failed to parse signal line: {} - Raw: {}", e, line);
+                        warn!("Failed to parse signal line as notification: {} - Raw: {}", e, line);
                     }
                 }
             }
@@ -119,12 +130,57 @@ impl SignalClient {
             "id": "1"
         });
 
+        self.send_payload(&payload).await
+    }
+
+    pub async fn send_receipt(&mut self, recipient: &str, target_timestamp: u64) -> Result<()> {
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "method": "sendReceipt",
+            "params": {
+                "recipient": [recipient],
+                "targetTimestamp": [target_timestamp],
+                "type": "read"
+            },
+            "id": "2"
+        });
+
+        self.send_payload(&payload).await
+    }
+
+    pub async fn send_typing(&mut self, recipient: &str) -> Result<()> {
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "method": "sendTyping",
+            "params": {
+                "recipient": [recipient]
+            },
+            "id": "3"
+        });
+
+        self.send_payload(&payload).await
+    }
+
+    pub async fn stop_typing(&mut self, recipient: &str) -> Result<()> {
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "method": "sendTyping",
+            "params": {
+                "recipient": [recipient],
+                "stop": true
+            },
+            "id": "4"
+        });
+
+        self.send_payload(&payload).await
+    }
+
+    async fn send_payload(&mut self, payload: &Value) -> Result<()> {
         if let Some(stdin) = &mut self.stdin {
-             let payload_str = serde_json::to_string(&payload)?;
+             let payload_str = serde_json::to_string(payload)?;
              stdin.write_all(payload_str.as_bytes()).await?;
              stdin.write_all(b"\n").await?;
              stdin.flush().await?;
-             info!("Sent message to {}", recipient);
         } else {
             return Err(anyhow::anyhow!("Signal stdin is not available"));
         }

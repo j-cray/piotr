@@ -46,15 +46,33 @@ async fn main() -> anyhow::Result<()> {
             if let Some(data) = envelope.data_message {
                 if let Some(text) = data.message {
                     info!("Processing text from {}: {}", source, text);
+
+                    // Send Read Receipt
+                    if let Err(e) = signal_client.send_receipt(&source, envelope.timestamp).await {
+                        log::warn!("Failed to send read receipt: {:?}", e);
+                    }
+
+                    // Start Typing Indicator
+                    if let Err(e) = signal_client.send_typing(&source).await {
+                        log::warn!("Failed to send typing indicator: {:?}", e);
+                    }
+
                     // AI Generation
                     match ai_client.generate_content(&text).await {
                         Ok(response) => {
                             info!("AI Response: {}", response);
+
+                            // Stop Typing Indicator (optional, but good hygiene)
+                            let _ = signal_client.stop_typing(&source).await;
+
                             if let Err(e) = signal_client.send_message(&source, &response).await {
                                 log::error!("Failed to send Signal response: {:?}", e);
                             }
                         }
-                        Err(e) => log::error!("AI Error: {:?}", e),
+                        Err(e) => {
+                            log::error!("AI Error: {:?}", e);
+                             let _ = signal_client.stop_typing(&source).await;
+                        }
                     }
                 }
             }
