@@ -147,9 +147,11 @@ async fn main() -> anyhow::Result<()> {
                         if intent.starts_with("IMAGE") {
                              // Image Generation
                              let model = if intent == "IMAGE_4" { "imagen-4.0-generate-001" } else { "imagen-3.0-generate-001" };
+                             info!("Attempting to generate image with model: {} for prompt: {}", model, prompt);
 
                              match ai_client.generate_image(&prompt, model).await {
                                  Ok(image_bytes) => {
+                                     info!("Image generation successful. Bytes: {}", image_bytes.len());
                                      // Save to temp file
                                      let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
                                      let filename = format!("/tmp/piotr_img_{}.png", timestamp);
@@ -169,7 +171,7 @@ async fn main() -> anyhow::Result<()> {
                                      }
                                  },
                                  Err(e) => {
-                                     log::error!("Image generation failed: {:?}", e);
+                                     log::error!("Image generation failed (LOGGED ERROR): {:?}", e);
                                      let mut sc = signal_client.lock().await;
                                      let _ = sc.send_message(&source, group_id.as_deref(), &format!("I could not generate that image with {}. I am sorry.", model), None).await;
                                  }

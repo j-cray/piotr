@@ -124,6 +124,7 @@ impl VertexClient {
 
         if !resp.status().is_success() {
             let error_text = resp.text().await?;
+            log::error!("Vertex AI Imagen Raw Error: {}", error_text);
             anyhow::bail!("Vertex AI Imagen Error: {}", error_text);
         }
 
