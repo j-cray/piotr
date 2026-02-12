@@ -47,8 +47,8 @@ echo "If the QR code below fails, copy the above URI and convert it to a QR code
 
 
 # Generate QR code
-# -t UTF8 makes it work in terminal
-echo "$URI" | qrencode -t UTF8
+# -t ANSI256 might be more reliable for some terminals
+echo "$URI" | qrencode -t ANSI256
 
 echo ""
 echo "Scan the QR code above with your primary Signal device."
@@ -64,5 +64,5 @@ else
     echo "Linking failed with exit code $EXIT_CODE. Check link_output.log."
 fi
 
-# Cleanup
-rm link_output.log dbus-session.conf
+# Cleanup - keeping log for debugging if needed
+rm dbus-session.conf
