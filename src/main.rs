@@ -91,9 +91,9 @@ async fn main() -> anyhow::Result<()> {
                                 // Stop Typing Indicator
                                 let _ = signal_client.stop_typing(&source, group_id).await;
 
-                                // Split and send up to 3 messages
+                                // Split and send up to 4 messages
                                 let chunks = textwrap::wrap(&response, 240);
-                                for (i, chunk) in chunks.iter().take(3).enumerate() {
+                                for (i, chunk) in chunks.iter().take(4).enumerate() {
                                     if let Err(e) = signal_client.send_message(&source, group_id, &chunk).await {
                                         log::error!("Failed to send Signal response part {}: {:?}", i + 1, e);
                                     }
