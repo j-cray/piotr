@@ -140,7 +140,8 @@ async fn main() -> anyhow::Result<()> {
                                          if let Err(e) = signal_client.send_message(&source, group_id, "Here is your image.", Some(&filename)).await {
                                              log::error!("Failed to send image: {:?}", e);
                                          }
-                                         // Cleanup
+                                         // Cleanup - Wait for signal-cli to process file
+                                         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                                          let _ = std::fs::remove_file(&filename);
                                      }
                                  },
