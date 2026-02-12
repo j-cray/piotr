@@ -30,6 +30,7 @@
             })
             google-cloud-sdk # Essential (gcloud)
             signal-cli # Signal Messenger CLI
+            qrencode # QR Code Generator
           ];
 
           shellHook = ''
