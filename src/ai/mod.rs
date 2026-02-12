@@ -186,7 +186,7 @@ impl VertexClient {
             "contents": contents,
             "generationConfig": {
                 "temperature": 0.0,
-                "maxOutputTokens": 10
+                "maxOutputTokens": 256
             }
         });
 
