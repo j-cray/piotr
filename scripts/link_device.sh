@@ -6,9 +6,26 @@
 echo "Starting signal-cli linking process..."
 echo "Please wait for the QR code to appear."
 
+# Create a minimal dbus session config
+cat > dbus-session.conf <<EOF
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <keep_umask/>
+  <listen>unix:tmpdir=/tmp</listen>
+  <standard_session_servicedirs />
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+EOF
+
 # Run signal-cli in the background, redirecting output to a file
 # usage of dbus-run-session is required for signal-cli
-dbus-run-session -- signal-cli link -n "piotr-bot" > link_output.log 2>&1 &
+dbus-run-session --config-file=./dbus-session.conf -- signal-cli link -n "piotr-bot" > link_output.log 2>&1 &
 SIGNAL_PID=$!
 
 # Wait for the URI to appear in the log file
@@ -45,4 +62,4 @@ else
 fi
 
 # Cleanup
-rm link_output.log
+rm link_output.log dbus-session.conf
