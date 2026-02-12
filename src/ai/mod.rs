@@ -168,13 +168,16 @@ impl VertexClient {
                 - IMAGE_4: If request asks for 'high quality', 'ultra realistic', '4k', or 'detailed' image/drawing/photo.
                 - IMAGE_3: If request asks to 'draw', 'generate', 'create', 'sketch', or 'paint' an image/picture/photo/art/robot, OR specifically says 'generate an image'.
                 - PRO: If request involves complex reasoning, coding, math, or analysis.
-                - SEARCH: If request asks to 'search', 'google', 'find info', 'who is', 'what is', 'latest news', or 'lookup'.
+                - SEARCH: If request asks to 'search', 'google', 'find info', 'who is', 'what is', 'latest news', 'lookup', or contains 'search the web'.
                 - FLASH: For casual chat, greetings, or simple questions.
 
                 Input: 'draw a cat' -> Output: IMAGE_3
                 Input: 'generate an image of a dog' -> Output: IMAGE_3
                 Input: 'sketch a robot' -> Output: IMAGE_3
                 Input: 'search for rust release' -> Output: SEARCH
+                Input: 'google who won the super bowl' -> Output: SEARCH
+                Input: 'find info on mars' -> Output: SEARCH
+                Input: 'search the web for olympics' -> Output: SEARCH
                 Input: 'hello' -> Output: FLASH
                 Input: 'code a snake game' -> Output: PRO
 
