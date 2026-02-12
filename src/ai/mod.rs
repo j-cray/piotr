@@ -48,6 +48,40 @@ pub struct Part {
     pub text: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct GenerateContentResponse {
+    candidates: Option<Vec<Candidate>>,
+    #[serde(rename = "promptFeedback")]
+    prompt_feedback: Option<PromptFeedback>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct Candidate {
+    content: Option<Content>,
+    #[serde(rename = "finishReason")]
+    finish_reason: Option<String>,
+    #[serde(rename = "safetyRatings")]
+    safety_ratings: Option<Vec<SafetyRating>>,
+    #[serde(rename = "citationMetadata")]
+    citation_metadata: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct PromptFeedback {
+    #[serde(rename = "blockReason")]
+    block_reason: Option<String>,
+    #[serde(rename = "safetyRatings")]
+    safety_ratings: Option<Vec<SafetyRating>>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SafetyRating {
+    category: String,
+    probability: String,
+    blocked: Option<bool>,
+}
+
+
 impl VertexClient {
     pub fn new(project_id: &str) -> Self {
         Self {
@@ -120,19 +154,42 @@ impl VertexClient {
 
             let status = resp.status();
             if status.is_success() {
-                let resp_json: serde_json::Value = resp.json().await?;
-                if let Some(candidates) = resp_json.get("candidates").and_then(|c| c.as_array()) {
+                let resp_text = resp.text().await?;
+                // Parse into our structured types for better inspection
+                let response: GenerateContentResponse = match serde_json::from_str(&resp_text) {
+                    Ok(r) => r,
+                    Err(e) => {
+                         log::error!("Failed to parse Vertex AI response: {}. Raw text: {}", e, resp_text);
+                         return Ok("I ... I don't know what happened. The wires... they crossed.".to_string());
+                    }
+                };
+
+                if let Some(candidates) = response.candidates {
                     if let Some(first) = candidates.first() {
-                         if let Some(parts) = first.get("content").and_then(|c| c.get("parts")).and_then(|p| p.as_array()) {
-                            if let Some(text_part) = parts.first() {
-                                if let Some(text) = text_part.get("text").and_then(|t| t.as_str()) {
+                         // Check for finishReason
+                         if let Some(reason) = &first.finish_reason {
+                             if reason != "STOP" {
+                                 log::warn!("Vertex AI finishReason: {}. Safety ratings: {:?}", reason, first.safety_ratings);
+                                 if reason == "SAFETY" || reason == "RECITATION" {
+                                     return Ok(format!("I cannot answer that. Google says no ({})", reason));
+                                 }
+                             }
+                         }
+
+                         if let Some(content) = &first.content {
+                             if let Some(parts) = &content.parts.first() {
+                                if let Some(text) = &parts.text {
                                     return Ok(text.to_string());
                                 }
-                            }
+                             }
                         }
                     }
                 }
-                return Ok("No content generated".to_string());
+
+                // Fallback if structure is oddly empty even with success
+                log::warn!("Vertex AI returned success but no content found. Full response: {:?}", resp_text);
+                return Ok("I have nothing to say about that.".to_string());
+
             } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
                 retries += 1;
                 if retries > 3 {
@@ -145,6 +202,10 @@ impl VertexClient {
                 continue;
             } else {
                  let error_text = resp.text().await?;
+                 // Check if it's a 400 with safety block
+                 if status == StatusCode::BAD_REQUEST && error_text.contains("SAFETY") {
+                      return Ok("That's ... a bit too risky for me.".to_string());
+                 }
                  anyhow::bail!("Vertex AI Error: {} - {}", status, error_text);
             }
         }
