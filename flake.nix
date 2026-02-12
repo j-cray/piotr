@@ -32,6 +32,7 @@
             signal-cli # Signal Messenger CLI
             qrencode # QR Code Generator
             dbus # DBus for signal-cli
+            (python3.withPackages (ps: with ps; [qrcode])) # Python for better QR generation
           ];
 
           shellHook = ''
