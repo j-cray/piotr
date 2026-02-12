@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Signal listener started. Waiting for messages...");
 
     // Conversation History: GroupID/Source -> VecDeque of Content
-    let mut history: std::collections::HashMap<String, std::collections::VecDeque<ai::Content>> = std::collections::HashMap::new();
+    let history: Arc<Mutex<std::collections::HashMap<String, std::collections::VecDeque<ai::Content>>>> = Arc::new(Mutex::new(std::collections::HashMap::new()));
     // Re-read signal phone for quote check
     let bot_number = std::env::var("SIGNAL_PHONE_NUMBER").unwrap_or_else(|_| "+12506417114".to_string());
 
@@ -72,10 +72,13 @@ async fn main() -> anyhow::Result<()> {
                         role: "user".to_string(),
                         parts: vec![ai::Part { text: Some(text.clone()) }],
                     };
-
-                    let chat_history = history.entry(context_key.clone()).or_insert_with(|| std::collections::VecDeque::new());
-                    chat_history.push_back(user_content);
-                    if chat_history.len() > 20 { chat_history.pop_front(); }
+                    // Add User Message to History (Locking)
+                    {
+                        let mut history_guard = history.lock().await;
+                        let chat_history = history_guard.entry(context_key.clone()).or_insert_with(|| std::collections::VecDeque::new());
+                        chat_history.push_back(user_content);
+                        if chat_history.len() > 20 { chat_history.pop_front(); }
+                    }
 
                     let text_lower = text.trim().to_lowercase();
 
@@ -86,6 +89,7 @@ async fn main() -> anyhow::Result<()> {
                         false
                     };
 
+                    // Determine if we should reply
                     let (should_reply, prompt) = if is_group {
                         if text_lower.starts_with("piotr") || text_lower.starts_with("hey piotr") || is_quote_reply {
                             (true, text.clone())
@@ -106,135 +110,156 @@ async fn main() -> anyhow::Result<()> {
                     if should_reply {
                          info!("Processing prompt from {}: {}", source, prompt);
 
-                        let group_id = data.group_info.as_ref().map(|g| g.group_id.clone());
+                         let group_id = data.group_info.as_ref().map(|g| g.group_id.clone());
 
-                        // Send Read Receipt
-                        {
-                            let mut sc = signal_client.lock().await;
-                            if let Err(e) = sc.send_receipt(&source, envelope.timestamp).await {
-                                log::warn!("Failed to send read receipt: {:?}", e);
-                            }
-                        }
+                         // Clone for Task
+                         let signal_client_task = signal_client.clone();
+                         let ai_client_task = ai_client.clone();
+                         let history_task = history.clone();
+                         let source_task = source.clone();
+                         let group_id_task = group_id.clone();
+                         let context_key_task = context_key.clone();
+                         let prompt_task: String = prompt.clone();
+                         let timestamp_task = envelope.timestamp;
 
-                        // Start Persistent Typing Indicator Task
-                        let sc_typing = signal_client.clone();
-                        let source_typing = source.clone();
-                        let group_id_typing = group_id.clone();
-
-                        let typing_task = tokio::spawn(async move {
-                            loop {
-                                {
-                                    let mut sc = sc_typing.lock().await;
-                                    if let Err(e) = sc.send_typing(&source_typing, group_id_typing.as_deref()).await {
-                                        log::warn!("Failed to send typing indicator: {:?}", e);
-                                    }
-                                }
-                                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                            }
-                        });
-
-
-                        // Intent Classification
-                        let intent = match ai_client.classify_intent(&prompt).await {
-                            Ok(i) => i,
-                            Err(e) => {
-                                log::error!("Intent classification failed: {:?}", e);
-                                "FLASH".to_string()
-                            }
-                        };
-                         info!("Classified intent: {}", intent);
-
-                        if intent.starts_with("IMAGE") {
-                             // Image Generation
-                             let model = if intent == "IMAGE_4" { "imagen-4.0-generate-001" } else { "imagen-3.0-generate-001" };
-                             info!("Attempting to generate image with model: {} for prompt: {}", model, prompt);
-
-                             match ai_client.generate_image(&prompt, model).await {
-                                 Ok(image_bytes) => {
-                                     info!("Image generation successful. Bytes: {}", image_bytes.len());
-                                     // Save to temp file
-                                     let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
-                                     let filename = format!("/tmp/piotr_img_{}.png", timestamp);
-                                     if let Err(e) = std::fs::write(&filename, image_bytes) {
-                                         log::error!("Failed to write image to temp file: {:?}", e);
-                                         let mut sc = signal_client.lock().await;
-                                         let _ = sc.send_message(&source, group_id.as_deref(), "I tried to draw something but my pencil broke (write error).", None).await;
-                                     } else {
-                                         // Send with attachment
-                                         let mut sc = signal_client.lock().await;
-                                         if let Err(e) = sc.send_message(&source, group_id.as_deref(), "Here is your image.", Some(&filename)).await {
-                                             log::error!("Failed to send image: {:?}", e);
-                                         }
-                                         // Cleanup - Wait for signal-cli to process file
-                                         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                                         let _ = std::fs::remove_file(&filename);
-                                     }
-                                 },
-                                 Err(e) => {
-                                     log::error!("Image generation failed (LOGGED ERROR): {:?}", e);
-                                     let mut sc = signal_client.lock().await;
-                                     let _ = sc.send_message(&source, group_id.as_deref(), &format!("I could not generate that image with {}. I am sorry.", model), None).await;
+                         tokio::spawn(async move {
+                             // Send Read Receipt
+                             {
+                                 let mut sc = signal_client_task.lock().await;
+                                 if let Err(e) = sc.send_receipt(&source_task, timestamp_task).await {
+                                     log::warn!("Failed to send read receipt: {:?}", e);
                                  }
                              }
-                             // Stop typing
-                             typing_task.abort();
-                             let mut sc = signal_client.lock().await;
-                             let _ = sc.stop_typing(&source, group_id.as_deref()).await;
 
-                        } else {
-                            // Text Generation (Flash/Pro/Search)
-                            let (model_id, use_search) = if intent == "SEARCH" {
-                                // Use Flash for search to be faster/cheaper, or Pro if needed. Let's use Flash for now.
-                                ("gemini-3-flash-preview", true)
-                            } else if intent == "PRO" {
-                                ("gemini-3-pro-preview", false)
-                            } else {
-                                ("gemini-3-flash-preview", false)
-                            };
+                             // Start Persistent Typing Indicator Task
+                             let sc_typing = signal_client_task.clone();
+                             let source_typing = source_task.clone();
+                             let group_id_typing = group_id_task.clone();
 
-                            // Clone history to Vec for API
-                            let history_vec: Vec<ai::Content> = chat_history.iter().cloned().collect();
+                             let typing_task = tokio::spawn(async move {
+                                 loop {
+                                     {
+                                         let mut sc = sc_typing.lock().await;
+                                         if let Err(e) = sc.send_typing(&source_typing, group_id_typing.as_deref()).await {
+                                             log::warn!("Failed to send typing indicator: {:?}", e);
+                                         }
+                                     }
+                                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                                 }
+                             });
 
-                            match ai_client.generate_content(history_vec, model_id, use_search).await {
-                                Ok(response) => {
-                                    info!("AI Response: {}", response);
+                             // Intent Classification
+                             let intent = match ai_client_task.classify_intent(&prompt_task).await {
+                                 Ok(i) => i,
+                                 Err(e) => {
+                                     log::error!("Intent classification failed: {:?}", e);
+                                     "FLASH".to_string()
+                                 }
+                             };
+                             info!("Classified intent: {}", intent);
 
-                                    // Add Model Response to History
-                                    let model_content = ai::Content {
-                                        role: "model".to_string(),
-                                        parts: vec![ai::Part { text: Some(response.clone()) }],
-                                    };
-                                    if let Some(hist) = history.get_mut(&context_key) {
-                                         hist.push_back(model_content);
-                                         if hist.len() > 20 { hist.pop_front(); }
-                                    }
+                             if intent.starts_with("IMAGE") {
+                                  // Image Generation
+                                  let model = if intent == "IMAGE_4" { "imagen-4.0-generate-001" } else { "imagen-3.0-generate-001" };
+                                  info!("Attempting to generate image with model: {} for prompt: {}", model, prompt_task);
 
-                                    // Stop Typing Indicator
-                                    typing_task.abort();
-                                    {
-                                        let mut sc = signal_client.lock().await;
-                                        let _ = sc.stop_typing(&source, group_id.as_deref()).await;
-                                    }
+                                  match ai_client_task.generate_image(&prompt_task, model).await {
+                                      Ok(image_bytes) => {
+                                          info!("Image generation successful. Bytes: {}", image_bytes.len());
+                                          // Save to temp file
+                                          let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+                                          let filename = format!("/tmp/piotr_img_{}.png", timestamp);
+                                          if let Err(e) = std::fs::write(&filename, image_bytes) {
+                                              log::error!("Failed to write image to temp file: {:?}", e);
+                                              let mut sc = signal_client_task.lock().await;
+                                              let _ = sc.send_message(&source_task, group_id_task.as_deref(), "I tried to draw something but my pencil broke (write error).", None).await;
+                                          } else {
+                                              // Send with attachment
+                                              let mut sc = signal_client_task.lock().await;
+                                              if let Err(e) = sc.send_message(&source_task, group_id_task.as_deref(), "Here is your image.", Some(&filename)).await {
+                                                  log::error!("Failed to send image: {:?}", e);
+                                              }
+                                              // Cleanup - Wait for signal-cli to process file
+                                              tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                                              let _ = std::fs::remove_file(&filename);
+                                          }
+                                      },
+                                      Err(e) => {
+                                          log::error!("Image generation failed (LOGGED ERROR): {:?}", e);
+                                          let mut sc = signal_client_task.lock().await;
+                                          let _ = sc.send_message(&source_task, group_id_task.as_deref(), &format!("I could not generate that image with {}. I am sorry.", model), None).await;
+                                      }
+                                  }
+                                  // Stop typing
+                                  typing_task.abort();
+                                  let mut sc = signal_client_task.lock().await;
+                                  let _ = sc.stop_typing(&source_task, group_id_task.as_deref()).await;
 
-                                    // Split and send up to 4 messages
-                                    let chunks = textwrap::wrap(&response, 240);
-                                    for (i, chunk) in chunks.iter().take(4).enumerate() {
-                                        let mut sc = signal_client.lock().await;
-                                        if let Err(e) = sc.send_message(&source, group_id.as_deref(), &chunk, None).await {
-                                            log::error!("Failed to send Signal response part {}: {:?}", i + 1, e);
-                                        }
-                                        tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
-                                    }
-                                }
-                                Err(e) => {
-                                    log::error!("AI Error: {:?}", e);
-                                     typing_task.abort();
-                                     let mut sc = signal_client.lock().await;
-                                     let _ = sc.stop_typing(&source, group_id.as_deref()).await;
-                                     let _ = sc.send_message(&source, group_id.as_deref(), "I tried to think but my brain returned 404. (AI Error - check logs)", None).await;
-                                }
-                            }
-                        }
+                             } else {
+                                 // Text Generation (Flash/Pro/Search)
+                                 let (model_id, use_search) = if intent == "SEARCH" {
+                                     ("gemini-3-flash-preview", true)
+                                 } else if intent == "PRO" {
+                                     ("gemini-3-pro-preview", false)
+                                 } else {
+                                     ("gemini-3-flash-preview", false)
+                                 };
+
+                                 // Clone history to Vec for API (Snapshot)
+                                 let history_vec: Vec<ai::Content> = {
+                                     let history_guard = history_task.lock().await;
+                                     if let Some(hist) = history_guard.get(&context_key_task) {
+                                         hist.iter().cloned().collect()
+                                     } else {
+                                         Vec::new()
+                                     }
+                                 };
+
+                                 match ai_client_task.generate_content(history_vec, model_id, use_search).await {
+                                     Ok(response) => {
+                                         info!("AI Response: {}", response);
+
+                                         // Add Model Response to History (Locking)
+                                         let model_content = ai::Content {
+                                             role: "model".to_string(),
+                                             parts: vec![ai::Part { text: Some(response.clone()) }],
+                                         };
+                                         {
+                                             let mut history_guard = history_task.lock().await;
+                                             if let Some(hist) = history_guard.get_mut(&context_key_task) {
+                                                  hist.push_back(model_content);
+                                                  if hist.len() > 20 { hist.pop_front(); }
+                                             }
+                                         }
+
+                                         // Stop Typing Indicator
+                                         typing_task.abort();
+                                         {
+                                             let mut sc = signal_client_task.lock().await;
+                                             let _ = sc.stop_typing(&source_task, group_id_task.as_deref()).await;
+                                         }
+
+                                         // Split and send up to 4 messages
+                                         let chunks = textwrap::wrap(&response, 240);
+                                         for (i, chunk) in chunks.iter().take(4).enumerate() {
+                                             let mut sc = signal_client_task.lock().await;
+                                             if let Err(e) = sc.send_message(&source_task, group_id_task.as_deref(), &chunk, None).await {
+                                                 log::error!("Failed to send Signal response part {}: {:?}", i + 1, e);
+                                             }
+                                             tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+                                         }
+                                     }
+                                     Err(e) => {
+                                         log::error!("AI Error: {:?}", e);
+                                          typing_task.abort();
+                                          let mut sc = signal_client_task.lock().await;
+                                          let _ = sc.stop_typing(&source_task, group_id_task.as_deref()).await;
+                                          let _ = sc.send_message(&source_task, group_id_task.as_deref(), "I tried to think but my brain returned 404. (AI Error - check logs)", None).await;
+                                     }
+                                 }
+                             }
+                         });
+
                     } else {
                         info!("Ignoring message from {}: {} (No trigger)", source, text);
                     }
