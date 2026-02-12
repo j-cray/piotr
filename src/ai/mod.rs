@@ -141,9 +141,10 @@ impl VertexClient {
         }];
 
         let token = self.get_token().await?;
+        // Use gemini-3-flash-preview for classification
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.project_id, "global", "gemini-1.5-flash-001"
+            API_ENDPOINT, self.project_id, "global", "gemini-3-flash-preview"
         );
 
         let body = json!({

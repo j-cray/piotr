@@ -20,7 +20,8 @@ async fn main() -> anyhow::Result<()> {
         role: "user".to_string(),
         parts: vec![ai::Part { text: Some("Hello! Are you working?".to_string()) }],
     };
-    match ai_client.generate_content(vec![test_content], "gemini-1.5-flash-001").await {
+    // Use Gemini 3 Flash for test
+    match ai_client.generate_content(vec![test_content], "gemini-3-flash-preview").await {
         Ok(response) => info!("Received response: {}", response),
         Err(e) => info!("Error querying Vertex AI: {:?}", e),
     }
@@ -153,7 +154,8 @@ async fn main() -> anyhow::Result<()> {
 
                         } else {
                             // Text Generation (Flash/Pro)
-                            let model_id = if intent == "PRO" { "gemini-1.5-pro-preview-0409" } else { "gemini-1.5-flash-001" };
+                            // Use gemini-3-flash-preview for FLASH, gemini-3-pro-preview for PRO
+                            let model_id = if intent == "PRO" { "gemini-3-pro-preview" } else { "gemini-3-flash-preview" };
 
                             // Clone history to Vec for API
                             let history_vec: Vec<ai::Content> = chat_history.iter().cloned().collect();
@@ -187,6 +189,7 @@ async fn main() -> anyhow::Result<()> {
                                 Err(e) => {
                                     log::error!("AI Error: {:?}", e);
                                      let _ = signal_client.stop_typing(&source, group_id).await;
+                                     let _ = signal_client.send_message(&source, group_id, "I tried to think but my brain returned 404. (AI Error - check logs)", None).await;
                                 }
                             }
                         }
