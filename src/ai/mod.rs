@@ -158,7 +158,7 @@ impl VertexClient {
             "systemInstruction": {
                 "parts": [{ "text": "You are a router. Analyze the user's request.
                 - Return 'IMAGE_4' if the user specifically asks for 'imagen 4', 'high quality', 'ultra realistic', '4k', or 'detailed' image.
-                - Return 'IMAGE_3' if the user asks to draw/generate an image but it is standard/fast/simple or asks for 'imagen 3'.
+                - Return 'IMAGE_3' if the user asks to draw, generate, create, sketch, or paint an image/picture/photo/art.
                 - Return 'PRO' if complex reasoning/coding/math.
                 - Return 'FLASH' for casual chat.
                 Output ONLY the keyword." }]

@@ -3,6 +3,8 @@ mod ai;
 
 use dotenv::dotenv;
 use log::info;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -30,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
     // Phone number must be configured via env (see .env)
     let signal_phone = std::env::var("SIGNAL_PHONE_NUMBER").expect("SIGNAL_PHONE_NUMBER must be set in .env");
 
-    let mut signal_client = match signal::SignalClient::new(&signal_phone).await {
+    let mut signal_client_raw = match signal::SignalClient::new(&signal_phone).await {
         Ok(client) => client,
         Err(e) => {
             log::error!("Failed to start SignalClient: {:?}", e);
@@ -38,7 +40,10 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let mut rx = signal_client.run_listener().await?;
+    let mut rx = signal_client_raw.run_listener().await?;
+
+    // Wrap in Arc<Mutex> for sharing with typing task
+    let signal_client = Arc::new(Mutex::new(signal_client_raw));
 
     info!("Signal listener started. Waiting for messages...");
 
@@ -101,17 +106,33 @@ async fn main() -> anyhow::Result<()> {
                     if should_reply {
                          info!("Processing prompt from {}: {}", source, prompt);
 
-                        let group_id = data.group_info.as_ref().map(|g| g.group_id.as_str());
+                        let group_id = data.group_info.as_ref().map(|g| g.group_id.clone());
 
                         // Send Read Receipt
-                        if let Err(e) = signal_client.send_receipt(&source, envelope.timestamp).await {
-                            log::warn!("Failed to send read receipt: {:?}", e);
+                        {
+                            let mut sc = signal_client.lock().await;
+                            if let Err(e) = sc.send_receipt(&source, envelope.timestamp).await {
+                                log::warn!("Failed to send read receipt: {:?}", e);
+                            }
                         }
 
-                        // Start Typing Indicator
-                        if let Err(e) = signal_client.send_typing(&source, group_id).await {
-                            log::warn!("Failed to send typing indicator: {:?}", e);
-                        }
+                        // Start Persistent Typing Indicator Task
+                        let sc_typing = signal_client.clone();
+                        let source_typing = source.clone();
+                        let group_id_typing = group_id.clone();
+
+                        let typing_task = tokio::spawn(async move {
+                            loop {
+                                {
+                                    let mut sc = sc_typing.lock().await;
+                                    if let Err(e) = sc.send_typing(&source_typing, group_id_typing.as_deref()).await {
+                                        log::warn!("Failed to send typing indicator: {:?}", e);
+                                    }
+                                }
+                                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                            }
+                        });
+
 
                         // Intent Classification
                         let intent = match ai_client.classify_intent(&prompt).await {
@@ -134,10 +155,12 @@ async fn main() -> anyhow::Result<()> {
                                      let filename = format!("/tmp/piotr_img_{}.png", timestamp);
                                      if let Err(e) = std::fs::write(&filename, image_bytes) {
                                          log::error!("Failed to write image to temp file: {:?}", e);
-                                         let _ = signal_client.send_message(&source, group_id, "I tried to draw something but my pencil broke (write error).", None).await;
+                                         let mut sc = signal_client.lock().await;
+                                         let _ = sc.send_message(&source, group_id.as_deref(), "I tried to draw something but my pencil broke (write error).", None).await;
                                      } else {
                                          // Send with attachment
-                                         if let Err(e) = signal_client.send_message(&source, group_id, "Here is your image.", Some(&filename)).await {
+                                         let mut sc = signal_client.lock().await;
+                                         if let Err(e) = sc.send_message(&source, group_id.as_deref(), "Here is your image.", Some(&filename)).await {
                                              log::error!("Failed to send image: {:?}", e);
                                          }
                                          // Cleanup - Wait for signal-cli to process file
@@ -147,11 +170,14 @@ async fn main() -> anyhow::Result<()> {
                                  },
                                  Err(e) => {
                                      log::error!("Image generation failed: {:?}", e);
-                                     let _ = signal_client.send_message(&source, group_id, &format!("I could not generate that image with {}. I am sorry.", model), None).await;
+                                     let mut sc = signal_client.lock().await;
+                                     let _ = sc.send_message(&source, group_id.as_deref(), &format!("I could not generate that image with {}. I am sorry.", model), None).await;
                                  }
                              }
                              // Stop typing
-                             let _ = signal_client.stop_typing(&source, group_id).await;
+                             typing_task.abort();
+                             let mut sc = signal_client.lock().await;
+                             let _ = sc.stop_typing(&source, group_id.as_deref()).await;
 
                         } else {
                             // Text Generation (Flash/Pro)
@@ -176,12 +202,17 @@ async fn main() -> anyhow::Result<()> {
                                     }
 
                                     // Stop Typing Indicator
-                                    let _ = signal_client.stop_typing(&source, group_id).await;
+                                    typing_task.abort();
+                                    {
+                                        let mut sc = signal_client.lock().await;
+                                        let _ = sc.stop_typing(&source, group_id.as_deref()).await;
+                                    }
 
                                     // Split and send up to 4 messages
                                     let chunks = textwrap::wrap(&response, 240);
                                     for (i, chunk) in chunks.iter().take(4).enumerate() {
-                                        if let Err(e) = signal_client.send_message(&source, group_id, &chunk, None).await {
+                                        let mut sc = signal_client.lock().await;
+                                        if let Err(e) = sc.send_message(&source, group_id.as_deref(), &chunk, None).await {
                                             log::error!("Failed to send Signal response part {}: {:?}", i + 1, e);
                                         }
                                         tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
@@ -189,8 +220,10 @@ async fn main() -> anyhow::Result<()> {
                                 }
                                 Err(e) => {
                                     log::error!("AI Error: {:?}", e);
-                                     let _ = signal_client.stop_typing(&source, group_id).await;
-                                     let _ = signal_client.send_message(&source, group_id, "I tried to think but my brain returned 404. (AI Error - check logs)", None).await;
+                                     typing_task.abort();
+                                     let mut sc = signal_client.lock().await;
+                                     let _ = sc.stop_typing(&source, group_id.as_deref()).await;
+                                     let _ = sc.send_message(&source, group_id.as_deref(), "I tried to think but my brain returned 404. (AI Error - check logs)", None).await;
                                 }
                             }
                         }
