@@ -70,13 +70,16 @@ async fn main() -> anyhow::Result<()> {
                     if should_reply {
                          info!("Processing prompt from {}: {}", source, prompt); // Use 'prompt' instead of 'text'
 
-                        // Send Read Receipt
+                        let group_id = data.group_info.as_ref().map(|g| g.group_id.as_str());
+
+                        // Send Read Receipt (Always to the source/sender for now, or use group logic?
+                        // signal-cli sendReceipt takes recipient. It might suffice to send to source.)
                         if let Err(e) = signal_client.send_receipt(&source, envelope.timestamp).await {
                             log::warn!("Failed to send read receipt: {:?}", e);
                         }
 
                         // Start Typing Indicator
-                        if let Err(e) = signal_client.send_typing(&source).await {
+                        if let Err(e) = signal_client.send_typing(&source, group_id).await {
                             log::warn!("Failed to send typing indicator: {:?}", e);
                         }
 
@@ -85,16 +88,16 @@ async fn main() -> anyhow::Result<()> {
                             Ok(response) => {
                                 info!("AI Response: {}", response);
 
-                                // Stop Typing Indicator (optional, but good hygiene)
-                                let _ = signal_client.stop_typing(&source).await;
+                                // Stop Typing Indicator
+                                let _ = signal_client.stop_typing(&source, group_id).await;
 
-                                if let Err(e) = signal_client.send_message(&source, &response).await {
+                                if let Err(e) = signal_client.send_message(&source, group_id, &response).await {
                                     log::error!("Failed to send Signal response: {:?}", e);
                                 }
                             }
                             Err(e) => {
                                 log::error!("AI Error: {:?}", e);
-                                 let _ = signal_client.stop_typing(&source).await;
+                                 let _ = signal_client.stop_typing(&source, group_id).await;
                             }
                         }
                     } else {

@@ -130,14 +130,23 @@ impl SignalClient {
         Ok(rx)
     }
 
-    pub async fn send_message(&mut self, recipient: &str, message: &str) -> Result<()> {
+    pub async fn send_message(&mut self, recipient: &str, group_id: Option<&str>, message: &str) -> Result<()> {
+        let params = if let Some(gid) = group_id {
+            json!({
+                "groupId": [gid],
+                "message": message
+            })
+        } else {
+            json!({
+                "recipient": [recipient],
+                "message": message
+            })
+        };
+
         let payload = json!({
             "jsonrpc": "2.0",
             "method": "send",
-            "params": {
-                "recipient": [recipient],
-                "message": message
-            },
+            "params": params,
             "id": "1"
         });
 
@@ -159,27 +168,34 @@ impl SignalClient {
         self.send_payload(&payload).await
     }
 
-    pub async fn send_typing(&mut self, recipient: &str) -> Result<()> {
+    pub async fn send_typing(&mut self, recipient: &str, group_id: Option<&str>) -> Result<()> {
+        let params = if let Some(gid) = group_id {
+            json!({ "groupId": [gid] })
+        } else {
+            json!({ "recipient": [recipient] })
+        };
+
         let payload = json!({
             "jsonrpc": "2.0",
             "method": "sendTyping",
-            "params": {
-                "recipient": [recipient]
-            },
+            "params": params,
             "id": "3"
         });
 
         self.send_payload(&payload).await
     }
 
-    pub async fn stop_typing(&mut self, recipient: &str) -> Result<()> {
+    pub async fn stop_typing(&mut self, recipient: &str, group_id: Option<&str>) -> Result<()> {
+        let params = if let Some(gid) = group_id {
+            json!({ "groupId": [gid], "stop": true })
+        } else {
+            json!({ "recipient": [recipient], "stop": true })
+        };
+
         let payload = json!({
             "jsonrpc": "2.0",
             "method": "sendTyping",
-            "params": {
-                "recipient": [recipient],
-                "stop": true
-            },
+            "params": params,
             "id": "4"
         });
 
