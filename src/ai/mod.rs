@@ -48,7 +48,7 @@ impl VertexClient {
         Ok(token)
     }
 
-    pub async fn generate_content(&self, contents: Vec<Content>, model: &str) -> Result<String> {
+    pub async fn generate_content(&self, contents: Vec<Content>, model: &str, use_search: bool) -> Result<String> {
         let token = self.get_token().await?;
         // Use global endpoint for Gemini
         let url = format!(
@@ -59,7 +59,7 @@ impl VertexClient {
         // For debugging, print the URL
         log::info!("Generating content with URL: {}", url);
 
-        let body = json!({
+        let mut body_json = json!({
             "systemInstruction": {
                 "parts": [{ "text": "you are piotr, an eastern-european bot who is an eeyore-type figure, always down but always funny and witty. you are part of a group of friends in a group chat. make sure your responses are limited to 240 chars per message, you may send multiple responses in a row to get out a whole message up to 4 messages. be sparing with the jokes and aim to provide correct accurate facts when asked a question. wit is good but use it sparingly" }]
             },
@@ -70,10 +70,16 @@ impl VertexClient {
             }
         });
 
+        if use_search {
+            if let Some(obj) = body_json.as_object_mut() {
+                obj.insert("tools".to_string(), json!([{ "googleSearchRetrieval": {} }]));
+            }
+        }
+
         let client = reqwest::Client::new();
         let resp = client.post(&url)
             .bearer_auth(token)
-            .json(&body)
+            .json(&body_json)
             .send()
             .await?;
 
@@ -162,11 +168,13 @@ impl VertexClient {
                 - IMAGE_4: If request asks for 'high quality', 'ultra realistic', '4k', or 'detailed' image/drawing/photo.
                 - IMAGE_3: If request asks to 'draw', 'generate', 'create', 'sketch', or 'paint' an image/picture/photo/art/robot, OR specifically says 'generate an image'.
                 - PRO: If request involves complex reasoning, coding, math, or analysis.
+                - SEARCH: If request asks to 'search', 'google', 'find info', 'who is', 'what is', 'latest news', or 'lookup'.
                 - FLASH: For casual chat, greetings, or simple questions.
 
                 Input: 'draw a cat' -> Output: IMAGE_3
                 Input: 'generate an image of a dog' -> Output: IMAGE_3
                 Input: 'sketch a robot' -> Output: IMAGE_3
+                Input: 'search for rust release' -> Output: SEARCH
                 Input: 'hello' -> Output: FLASH
                 Input: 'code a snake game' -> Output: PRO
 

@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
         parts: vec![ai::Part { text: Some("Hello! Are you working?".to_string()) }],
     };
     // Use Gemini 3 Flash for test
-    match ai_client.generate_content(vec![test_content], "gemini-3-flash-preview").await {
+    match ai_client.generate_content(vec![test_content], "gemini-3-flash-preview", false).await {
         Ok(response) => info!("Received response: {}", response),
         Err(e) => info!("Error querying Vertex AI: {:?}", e),
     }
@@ -182,14 +182,20 @@ async fn main() -> anyhow::Result<()> {
                              let _ = sc.stop_typing(&source, group_id.as_deref()).await;
 
                         } else {
-                            // Text Generation (Flash/Pro)
-                            // Use gemini-3-flash-preview for FLASH, gemini-3-pro-preview for PRO
-                            let model_id = if intent == "PRO" { "gemini-3-pro-preview" } else { "gemini-3-flash-preview" };
+                            // Text Generation (Flash/Pro/Search)
+                            let (model_id, use_search) = if intent == "SEARCH" {
+                                // Use Flash for search to be faster/cheaper, or Pro if needed. Let's use Flash for now.
+                                ("gemini-3-flash-preview", true)
+                            } else if intent == "PRO" {
+                                ("gemini-3-pro-preview", false)
+                            } else {
+                                ("gemini-3-flash-preview", false)
+                            };
 
                             // Clone history to Vec for API
                             let history_vec: Vec<ai::Content> = chat_history.iter().cloned().collect();
 
-                            match ai_client.generate_content(history_vec, model_id).await {
+                            match ai_client.generate_content(history_vec, model_id, use_search).await {
                                 Ok(response) => {
                                     info!("AI Response: {}", response);
 
