@@ -3,7 +3,8 @@ use serde_json::json;
 use anyhow::Result;
 use reqwest::Client;
 
-const API_ENDPOINT: &str = "https://us-central1-aiplatform.googleapis.com/v1";
+// Correct global endpoint base URL
+const API_ENDPOINT: &str = "https://aiplatform.googleapis.com/v1";
 
 #[derive(Clone)]
 pub struct VertexClient {
@@ -49,10 +50,14 @@ impl VertexClient {
 
     pub async fn generate_content(&self, contents: Vec<Content>, model: &str) -> Result<String> {
         let token = self.get_token().await?;
+        // Use global endpoint for Gemini
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
             API_ENDPOINT, self.project_id, "global", model
         );
+
+        // For debugging, print the URL
+        log::info!("Generating content with URL: {}", url);
 
         let body = json!({
             "systemInstruction": {
@@ -95,9 +100,11 @@ impl VertexClient {
 
     pub async fn generate_image(&self, prompt: &str, model: &str) -> Result<Vec<u8>> {
         let token = self.get_token().await?;
+        // Imagen 3/4 likely requires regional endpoint (us-central1), NOT global AIPlatform.
+        // We need to use valid regional endpoint for Imagen.
         let url = format!(
-            "{}/projects/{}/locations/{}/publishers/google/models/{}:predict",
-            API_ENDPOINT, self.project_id, "us-central1", model
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/{}/locations/{}/publishers/google/models/{}:predict",
+            self.project_id, "us-central1", model
         );
 
         let body = json!({
@@ -141,7 +148,7 @@ impl VertexClient {
         }];
 
         let token = self.get_token().await?;
-        // Use gemini-3-flash-preview for classification
+        // Use gemini-3-flash-preview for classification via Global endpoint
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
             API_ENDPOINT, self.project_id, "global", "gemini-3-flash-preview"
