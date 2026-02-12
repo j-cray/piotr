@@ -143,7 +143,7 @@ impl VertexClient {
         let token = self.get_token().await?;
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.project_id, "us-central1", "gemini-1.5-flash-001"
+            API_ENDPOINT, self.project_id, "global", "gemini-1.5-flash-001"
         );
 
         let body = json!({
