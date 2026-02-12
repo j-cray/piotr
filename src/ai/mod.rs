@@ -51,7 +51,7 @@ impl VertexClient {
         let token = self.get_token().await?;
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.project_id, "us-central1", model
+            API_ENDPOINT, self.project_id, "global", model
         );
 
         let body = json!({
