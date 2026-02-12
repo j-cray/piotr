@@ -43,6 +43,8 @@ while [ -z "$URI" ]; do
 done
 
 echo "URI found: $URI"
+echo "If the QR code below fails, copy the above URI and convert it to a QR code manually."
+
 
 # Generate QR code
 # -t UTF8 makes it work in terminal
