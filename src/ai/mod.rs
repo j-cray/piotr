@@ -72,7 +72,7 @@ impl VertexClient {
 
         if use_search {
             if let Some(obj) = body_json.as_object_mut() {
-                obj.insert("tools".to_string(), json!([{ "googleSearchRetrieval": {} }]));
+                obj.insert("tools".to_string(), json!([{ "googleSearch": {} }]));
             }
         }
 
