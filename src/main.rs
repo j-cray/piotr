@@ -52,6 +52,11 @@ async fn main() -> anyhow::Result<()> {
     // Re-read signal phone for quote check
     let bot_number = std::env::var("SIGNAL_PHONE_NUMBER").unwrap_or_else(|_| "+12506417114".to_string());
 
+    // Sequencer Map: ContextKey -> mpsc::Sender<(DestinationInfo, oneshot::Receiver<BotResponse>)>
+    // We use UnboundedSender for simplicity, as we don't expect massive spam.
+    type DestinationInfo = (String, Option<String>); // (source, group_id)
+    let sequencers: Arc<Mutex<std::collections::HashMap<String, tokio::sync::mpsc::UnboundedSender<(DestinationInfo, tokio::sync::oneshot::Receiver<BotResponse>)>>>> = Arc::new(Mutex::new(std::collections::HashMap::new()));
+
     // Event Loop
     while let Some(msg) = rx.recv().await {
         info!("Received Signal Message: {:?}", msg);
@@ -67,12 +72,11 @@ async fn main() -> anyhow::Result<()> {
                         .map(|g| g.group_id.clone())
                         .unwrap_or_else(|| source.clone());
 
-                    // Add User Message to History
+                    // Add User Message to History (Locking)
                     let user_content = ai::Content {
                         role: "user".to_string(),
                         parts: vec![ai::Part { text: Some(text.clone()) }],
                     };
-                    // Add User Message to History (Locking)
                     {
                         let mut history_guard = history.lock().await;
                         let chat_history = history_guard.entry(context_key.clone()).or_insert_with(|| std::collections::VecDeque::new());
@@ -112,7 +116,89 @@ async fn main() -> anyhow::Result<()> {
 
                          let group_id = data.group_info.as_ref().map(|g| g.group_id.clone());
 
-                         // Clone for Task
+                         // Get or Create Sequencer for this Context
+                         let sequencer_tx = {
+                             let mut seq_map = sequencers.lock().await;
+                             if let Some(tx) = seq_map.get(&context_key) {
+                                 tx.clone()
+                             } else {
+                                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(DestinationInfo, tokio::sync::oneshot::Receiver<BotResponse>)>();
+                                 seq_map.insert(context_key.clone(), tx.clone());
+
+                                 // Spawn Sequencer Task
+                                 let history_seq = history.clone();
+                                 let signal_client_seq = signal_client.clone();
+                                 let context_key_seq = context_key.clone();
+
+                                 let tx_clone = tx.clone(); // For return
+
+                                 tokio::spawn(async move {
+                                     while let Some((dest_info, result_rx)) = rx.recv().await {
+                                         let (reply_source, reply_group_id) = dest_info;
+
+                                         // Wait for result
+                                         if let Ok(response) = result_rx.await {
+                                             match response {
+                                                 BotResponse::Text(text) => {
+                                                     // Update History
+                                                     let model_content = ai::Content {
+                                                         role: "model".to_string(),
+                                                         parts: vec![ai::Part { text: Some(text.clone()) }],
+                                                     };
+                                                     {
+                                                         let mut history_guard = history_seq.lock().await;
+                                                         if let Some(hist) = history_guard.get_mut(&context_key_seq) {
+                                                              hist.push_back(model_content);
+                                                              if hist.len() > 20 { hist.pop_front(); }
+                                                         }
+                                                     }
+
+                                                     // Send Split Messages
+                                                     let chunks = textwrap::wrap(&text, 240);
+                                                     for (i, chunk) in chunks.iter().take(4).enumerate() {
+                                                         let mut sc = signal_client_seq.lock().await;
+                                                         if let Err(e) = sc.send_message(&reply_source, reply_group_id.as_deref(), &chunk, None).await {
+                                                             log::error!("Failed to send Signal response part {}: {:?}", i + 1, e);
+                                                         }
+                                                         tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+                                                     }
+                                                 },
+                                                 BotResponse::Image(filename, text) => {
+                                                     let mut sc = signal_client_seq.lock().await;
+                                                     if let Err(e) = sc.send_message(&reply_source, reply_group_id.as_deref(), &text, Some(&filename)).await {
+                                                         log::error!("Failed to send image: {:?}", e);
+                                                     }
+                                                     // Cleanup image after sending
+                                                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                                                     let _ = std::fs::remove_file(&filename);
+                                                 },
+                                                 BotResponse::Error(err_msg) => {
+                                                     let mut sc = signal_client_seq.lock().await;
+                                                     let _ = sc.send_message(&reply_source, reply_group_id.as_deref(), &err_msg, None).await;
+                                                 },
+                                                 BotResponse::None => {} // Ignore
+                                             }
+
+                                             // Stop typing (Worker started it, Sequencer stops it after sending)
+                                             {
+                                                  let mut sc = signal_client_seq.lock().await;
+                                                  let _ = sc.stop_typing(&reply_source, reply_group_id.as_deref()).await;
+                                             }
+                                         }
+                                     }
+                                 });
+                                 tx_clone
+                             }
+                         };
+
+                         // Create Result Channel
+                         let (worker_tx, worker_rx) = tokio::sync::oneshot::channel::<BotResponse>();
+
+                         // Send Ticket to Sequencer (Preserves Order)
+                         let dest_info = (source.clone(), group_id.clone());
+                         let _ = sequencer_tx.send((dest_info, worker_rx));
+
+                         // Clone for Worker
                          let signal_client_task = signal_client.clone();
                          let ai_client_task = ai_client.clone();
                          let history_task = history.clone();
@@ -131,22 +217,16 @@ async fn main() -> anyhow::Result<()> {
                                  }
                              }
 
-                             // Start Persistent Typing Indicator Task
-                             let sc_typing = signal_client_task.clone();
-                             let source_typing = source_task.clone();
-                             let group_id_typing = group_id_task.clone();
-
-                             let typing_task = tokio::spawn(async move {
-                                 loop {
-                                     {
-                                         let mut sc = sc_typing.lock().await;
-                                         if let Err(e) = sc.send_typing(&source_typing, group_id_typing.as_deref()).await {
-                                             log::warn!("Failed to send typing indicator: {:?}", e);
-                                         }
-                                     }
-                                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                                 }
-                             });
+                             // Start Typing (Worker manages start)
+                             {
+                                 let mut sc = signal_client_task.lock().await;
+                                 let _ = sc.send_typing(&source_task, group_id_task.as_deref()).await;
+                             }
+                             // We don't need a loop for typing anymore if the Sequencer stops it accurately?
+                             // A loop is better because generation can take time and intent classification might be fast.
+                             // Let's keep a weak heartbeat task or just rely on the initial send?
+                             // Signal typing indicators expire after ~10-15s.
+                             // For now, simple single send.
 
                              // Intent Classification
                              let intent = match ai_client_task.classify_intent(&prompt_task).await {
@@ -158,7 +238,7 @@ async fn main() -> anyhow::Result<()> {
                              };
                              info!("Classified intent: {}", intent);
 
-                             if intent.starts_with("IMAGE") {
+                             let response = if intent.starts_with("IMAGE") {
                                   // Image Generation
                                   let model = if intent == "IMAGE_4" { "imagen-4.0-generate-001" } else { "imagen-3.0-generate-001" };
                                   info!("Attempting to generate image with model: {} for prompt: {}", model, prompt_task);
@@ -166,35 +246,20 @@ async fn main() -> anyhow::Result<()> {
                                   match ai_client_task.generate_image(&prompt_task, model).await {
                                       Ok(image_bytes) => {
                                           info!("Image generation successful. Bytes: {}", image_bytes.len());
-                                          // Save to temp file
                                           let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
                                           let filename = format!("/tmp/piotr_img_{}.png", timestamp);
                                           if let Err(e) = std::fs::write(&filename, image_bytes) {
                                               log::error!("Failed to write image to temp file: {:?}", e);
-                                              let mut sc = signal_client_task.lock().await;
-                                              let _ = sc.send_message(&source_task, group_id_task.as_deref(), "I tried to draw something but my pencil broke (write error).", None).await;
+                                              BotResponse::Error("I tried to draw something but my pencil broke (write error).".to_string())
                                           } else {
-                                              // Send with attachment
-                                              let mut sc = signal_client_task.lock().await;
-                                              if let Err(e) = sc.send_message(&source_task, group_id_task.as_deref(), "Here is your image.", Some(&filename)).await {
-                                                  log::error!("Failed to send image: {:?}", e);
-                                              }
-                                              // Cleanup - Wait for signal-cli to process file
-                                              tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                                              let _ = std::fs::remove_file(&filename);
+                                              BotResponse::Image(filename, "Here is your image.".to_string())
                                           }
                                       },
                                       Err(e) => {
                                           log::error!("Image generation failed (LOGGED ERROR): {:?}", e);
-                                          let mut sc = signal_client_task.lock().await;
-                                          let _ = sc.send_message(&source_task, group_id_task.as_deref(), &format!("I could not generate that image with {}. I am sorry.", model), None).await;
+                                          BotResponse::Error(format!("I could not generate that image with {}. I am sorry.", model))
                                       }
                                   }
-                                  // Stop typing
-                                  typing_task.abort();
-                                  let mut sc = signal_client_task.lock().await;
-                                  let _ = sc.stop_typing(&source_task, group_id_task.as_deref()).await;
-
                              } else {
                                  // Text Generation (Flash/Pro/Search)
                                  let (model_id, use_search) = if intent == "SEARCH" {
@@ -216,48 +281,19 @@ async fn main() -> anyhow::Result<()> {
                                  };
 
                                  match ai_client_task.generate_content(history_vec, model_id, use_search).await {
-                                     Ok(response) => {
-                                         info!("AI Response: {}", response);
-
-                                         // Add Model Response to History (Locking)
-                                         let model_content = ai::Content {
-                                             role: "model".to_string(),
-                                             parts: vec![ai::Part { text: Some(response.clone()) }],
-                                         };
-                                         {
-                                             let mut history_guard = history_task.lock().await;
-                                             if let Some(hist) = history_guard.get_mut(&context_key_task) {
-                                                  hist.push_back(model_content);
-                                                  if hist.len() > 20 { hist.pop_front(); }
-                                             }
-                                         }
-
-                                         // Stop Typing Indicator
-                                         typing_task.abort();
-                                         {
-                                             let mut sc = signal_client_task.lock().await;
-                                             let _ = sc.stop_typing(&source_task, group_id_task.as_deref()).await;
-                                         }
-
-                                         // Split and send up to 4 messages
-                                         let chunks = textwrap::wrap(&response, 240);
-                                         for (i, chunk) in chunks.iter().take(4).enumerate() {
-                                             let mut sc = signal_client_task.lock().await;
-                                             if let Err(e) = sc.send_message(&source_task, group_id_task.as_deref(), &chunk, None).await {
-                                                 log::error!("Failed to send Signal response part {}: {:?}", i + 1, e);
-                                             }
-                                             tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
-                                         }
-                                     }
+                                     Ok(text) => {
+                                         info!("AI Response: {}", text);
+                                         BotResponse::Text(text)
+                                     },
                                      Err(e) => {
                                          log::error!("AI Error: {:?}", e);
-                                          typing_task.abort();
-                                          let mut sc = signal_client_task.lock().await;
-                                          let _ = sc.stop_typing(&source_task, group_id_task.as_deref()).await;
-                                          let _ = sc.send_message(&source_task, group_id_task.as_deref(), "I tried to think but my brain returned 404. (AI Error - check logs)", None).await;
+                                         BotResponse::Error("I tried to think but my brain returned 404. (AI Error - check logs)".to_string())
                                      }
                                  }
-                             }
+                             };
+
+                             // Send result to Sequencer
+                             let _ = worker_tx.send(response);
                          });
 
                     } else {
@@ -267,6 +303,13 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
-
     Ok(())
+}
+
+#[derive(Debug)]
+enum BotResponse {
+    Text(String),
+    Image(String, String), // Filename, Caption
+    Error(String),
+    None,
 }
