@@ -25,8 +25,8 @@ This project aims to build a Rust-based Signal Messenger bot that leverages Goog
 **Goal:** connect the bot to Google's generative AI models.
 - **Milestone 3.1:** Implement GCP authentication flow using Service Account credentials.
 - **Milestone 3.2:** Develop a `VertexClient` struct to interact with the Vertex AI Prediction API.
-- **Milestone 3.3:** Create prompt templates and context management logic.
-- **Milestone 3.4:** Implement error handling and rate limiting for API calls.
+- **Milestone 3.3:** [COMPLETED] Create prompt templates and context management logic.
+- **Milestone 3.4:** [COMPLETED] Implement error handling and rate limiting for API calls.
 
 ### Phase 4: Bot Logic & Orchestration
 **Goal:** Combine Signal I/O with AI logic.
@@ -59,5 +59,5 @@ This project aims to build a Rust-based Signal Messenger bot that leverages Goog
 - [ ] Implement `generate_content` function for Gemini Pro.
 
 ### Phase 4: Core Logic
-- [ ] Create `src/bot.rs` for central logic.
-- [ ] Implement state management using `dashmap` or `redis` (optional).
+- [x] Create `src/bot.rs` for central logic.
+- [x] Implement state management using `HashMap` (via `SessionManager`).
