@@ -91,8 +91,14 @@ async fn main() -> anyhow::Result<()> {
                                 // Stop Typing Indicator
                                 let _ = signal_client.stop_typing(&source, group_id).await;
 
-                                if let Err(e) = signal_client.send_message(&source, group_id, &response).await {
-                                    log::error!("Failed to send Signal response: {:?}", e);
+                                // Split and send up to 3 messages
+                                let chunks = textwrap::wrap(&response, 240);
+                                for (i, chunk) in chunks.iter().take(3).enumerate() {
+                                    if let Err(e) = signal_client.send_message(&source, group_id, &chunk).await {
+                                        log::error!("Failed to send Signal response part {}: {:?}", i + 1, e);
+                                    }
+                                    // Optional: small delay to ensure order (Signal handles it usually, but 100ms doesn't hurt)
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                                 }
                             }
                             Err(e) => {
