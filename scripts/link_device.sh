@@ -47,8 +47,8 @@ echo "If the QR code below fails, copy the above URI and convert it to a QR code
 
 
 # Generate QR code
-# -t ANSI256 might be more reliable for some terminals
-echo "$URI" | qrencode -t ANSI256
+# Using python script for better ASCII rendering
+python3 scripts/generate_qr.py "$URI"
 
 echo ""
 echo "Scan the QR code above with your primary Signal device."
