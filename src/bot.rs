@@ -4,7 +4,7 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use log::{info, error, warn};
 use rand::RngExt; // For random_bool
 
-use crate::ai::{self, VertexClient, Content, Part, memory::Memory};
+use crate::ai::{self, VertexClient, Content, Part, memory::{Memory, ProfileManager}};
 use crate::signal::{SignalClient, Envelope};
 use std::time::SystemTime;
 
@@ -32,6 +32,7 @@ pub struct SessionManager {
     model_preferences: Arc<Mutex<HashMap<String, String>>>,
     bot_number: String,
     memory: Memory,
+    profile_manager: ProfileManager,
     sent_messages: Arc<Mutex<HashMap<u64, (String, String)>>>, // Timestamp -> (Prompt, Response)
 }
 
@@ -45,6 +46,7 @@ impl SessionManager {
             model_preferences: Arc::new(Mutex::new(HashMap::new())),
             bot_number,
             memory: Memory::new("data/learned_behaviors.json"),
+            profile_manager: ProfileManager::new("data/profiles"),
             sent_messages: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -113,8 +115,9 @@ impl SessionManager {
                 };
 
                 if should_reply {
+                    let profile_key = envelope.source_number.clone().unwrap_or(source.clone());
                     info!("Processing prompt from {}: {}", source, prompt);
-                    self.process_ai_request(source, group_id, context_key, prompt, timestamp).await;
+                    self.process_ai_request(source, group_id, context_key, prompt, timestamp, profile_key).await;
                 } else {
                     info!("Ignoring message from {}: {} (No trigger)", source, text);
                 }
@@ -210,7 +213,7 @@ impl SessionManager {
         let _ = sc.send_message(reply_source, reply_group_id, &response, None).await;
     }
 
-    async fn process_ai_request(&self, source: String, group_id: Option<String>, context_key: String, prompt: String, timestamp: u64) {
+    async fn process_ai_request(&self, source: String, group_id: Option<String>, context_key: String, prompt: String, timestamp: u64, profile_key: String) {
         // Get or Create Sequencer
         let sequencer_tx = self.get_sequencer_tx(context_key.clone()).await;
 
@@ -250,7 +253,7 @@ impl SessionManager {
             let response = if let Some(model) = model_override {
                 // If model is overridden, skip intent classification
                 info!("Using override model: {}", model);
-                self_clone.generate_text_response("OVERRIDE", &context_key, Some(model)).await
+                self_clone.generate_text_response("OVERRIDE", &context_key, &profile_key, Some(model)).await
             } else {
                 // Intent Classification (Auto Mode)
                 let intent = match self_clone.ai_client.classify_intent(&prompt).await {
@@ -265,9 +268,34 @@ impl SessionManager {
                 if intent.starts_with("IMAGE") {
                     self_clone.generate_image_response(&intent, &prompt).await
                 } else {
-                    self_clone.generate_text_response(&intent, &context_key, None).await
+                    self_clone.generate_text_response(&intent, &context_key, &profile_key, None).await
                 }
             };
+
+            // Trigger Profile Update
+            if let BotResponse::Text(ref text_response) = response {
+                 let prompt_clone = prompt.clone();
+                 let text_clone = text_response.clone();
+                 let profile_key_clone = profile_key.clone();
+                 let profile_manager = self_clone.profile_manager.clone();
+                 let ai_client = self_clone.ai_client.clone();
+
+                 tokio::spawn(async move {
+                     if let Ok(current_profile) = profile_manager.get_profile(&profile_key_clone) {
+                         let history_str = format!("User: {}\nBot: {}", prompt_clone, text_clone);
+                         match ai_client.analyze_profile_update(&current_profile, &history_str).await {
+                             Ok(updated_profile) => {
+                                 if let Err(e) = profile_manager.save_profile(&updated_profile) {
+                                     error!("Failed to save profile for {}: {:?}", profile_key_clone, e);
+                                 } else {
+                                     info!("Updated profile for {}", profile_key_clone);
+                                 }
+                             },
+                             Err(e) => error!("Failed to analyze profile update: {:?}", e)
+                         }
+                     }
+                 });
+            }
 
             // Send result to Sequencer
             let _ = worker_tx.send(response);
@@ -297,7 +325,7 @@ impl SessionManager {
         }
     }
 
-    async fn generate_text_response(&self, intent: &str, context_key: &str, override_model: Option<String>) -> BotResponse {
+    async fn generate_text_response(&self, intent: &str, context_key: &str, profile_key: &str, override_model: Option<String>) -> BotResponse {
         let (model_id, use_search) = if let Some(ref m) = override_model {
              (m.clone(), false) // Disable search by default for overrides
         } else if intent == "SEARCH" {
@@ -320,6 +348,30 @@ impl SessionManager {
 
         // Inject Learned Examples if available
         let mut final_history = Vec::new();
+
+        // 1. Inject User Profile
+        if let Ok(profile) = self.profile_manager.get_profile(profile_key) {
+            let mut profile_context = format!("User Profile for {}:\n", profile_key);
+            if let Some(name) = &profile.name {
+                profile_context.push_str(&format!("Name: {}\n", name));
+            }
+            profile_context.push_str(&format!("Personality: {}\n", profile.personality_summary));
+            profile_context.push_str(&format!("Style: {}\n", profile.interaction_style));
+            if !profile.topics_of_interest.is_empty() {
+                profile_context.push_str(&format!("Interests: {}\n", profile.topics_of_interest.join(", ")));
+            }
+            profile_context.push_str("\nUse this info to personalize your response. If you know their name, use it naturally.");
+
+            final_history.push(Content {
+                role: "user".to_string(),
+                parts: vec![Part { text: Some(format!("SYSTEM NOTE: {}", profile_context)) }]
+            });
+            final_history.push(Content {
+                role: "model".to_string(),
+                parts: vec![Part { text: Some("Understood. I will personalize my response based on this profile.".to_string()) }]
+            });
+        }
+
         if !override_model.is_some() {
              // Retrieve relevant examples (simple latest/best for now)
              let examples = self.memory.get_relevant_examples("", 3).await;

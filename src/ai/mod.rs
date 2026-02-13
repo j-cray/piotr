@@ -443,4 +443,107 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
             }
         }
     }
+
+    pub async fn analyze_profile_update(&self, current_profile: &crate::ai::memory::UserProfile, history: &str) -> Result<crate::ai::memory::UserProfile> {
+        let system_prompt = r#"You are a user profile manager for a chatbot.
+Your task is to analyze the recent conversation history and Update the user's profile.
+- name: Extract the user's name if they mentioned it. Keep existing if known and not changed.
+- personality_summary: concise summary of their personality traits observed so far.
+- interaction_style: one or two words description (e.g. "casual", "sarcastic", "formal", "friendly").
+- topics_of_interest: list of specific topics they have discussed or shown interest in.
+
+Input will be the "Current Profile" and "Recent History".
+Output the FULL updated profile as JSON.
+Scale of personality analysis should be incremental - don't completely rewrite unless new info changes the perspective.
+
+Structure:
+{
+  "id": "keep_original",
+  "name": "string or null",
+  "personality_summary": "string",
+  "interaction_style": "string",
+  "topics_of_interest": ["string"],
+  "last_updated": 0
+}
+"#;
+
+        let user_msg = format!(
+            "Current Profile: {}\n\nRecent History:\n{}",
+            serde_json::to_string_pretty(current_profile).unwrap_or_default(),
+            history
+        );
+
+        let contents = vec![Content {
+            role: "user".to_string(),
+            parts: vec![Part { text: Some(user_msg) }],
+        }];
+
+        let url = format!(
+            "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
+            API_ENDPOINT, self.project_id, "global", "gemini-3-flash-preview"
+        );
+
+        let body = json!({
+            "systemInstruction": {
+                "parts": [{ "text": system_prompt }]
+            },
+            "contents": contents,
+            "generationConfig": {
+                "temperature": 0.1,
+                "responseMimeType": "application/json"
+            }
+        });
+
+        let mut retries = 0;
+        loop {
+            self.wait_for_rate_limit().await;
+            let token = self.get_token().await?;
+
+            let resp = self.http_client.post(&url)
+                .bearer_auth(&token)
+                .json(&body)
+                .send()
+                .await?;
+
+            let status = resp.status();
+            if status.is_success() {
+                 let json: serde_json::Value = resp.json().await?;
+                 if let Some(candidates) = json.get("candidates").and_then(|c| c.as_array()) {
+                    if let Some(first) = candidates.first() {
+                         if let Some(parts) = first.get("content").and_then(|c| c.get("parts")).and_then(|p| p.as_array()) {
+                            if let Some(text_part) = parts.first() {
+                                if let Some(text) = text_part.get("text").and_then(|t| t.as_str()) {
+                                    match serde_json::from_str::<crate::ai::memory::UserProfile>(text) {
+                                        Ok(mut profile) => {
+                                            // Ensure ID and timestamp are handled correctly
+                                            profile.id = current_profile.id.clone();
+                                            profile.last_updated = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
+                                            return Ok(profile);
+                                        },
+                                        Err(e) => {
+                                            log::error!("Failed to parse profile update JSON: {}. Text: {}", e, text);
+                                            // Fail safe: return original
+                                            return Ok(current_profile.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                anyhow::bail!("No content in profile analysis response");
+            } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                 retries += 1;
+                 if retries > 3 {
+                      anyhow::bail!("Profile analysis failed after retries: {}", status);
+                 }
+                 let wait = Duration::from_millis(500 * 2u64.pow(retries));
+                 tokio::time::sleep(wait).await;
+                 continue;
+            } else {
+                 let error_text = resp.text().await?;
+                 anyhow::bail!("Profile Analysis Error: {} - {}", status, error_text);
+            }
+        }
+    }
 }
