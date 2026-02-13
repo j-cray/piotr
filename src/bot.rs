@@ -4,7 +4,7 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use log::{info, error, warn};
 use rand::RngExt; // For random_bool
 
-use crate::ai::{VertexClient, Content, Part, memory::{Memory, ProfileManager}};
+use crate::ai::{VertexClient, Content, Part, memory::{Memory, DbProfileManager}};
 use crate::signal::{SignalClient, Envelope};
 use std::time::SystemTime;
 
@@ -35,12 +35,12 @@ pub struct SessionManager {
     model_preferences: Arc<Mutex<HashMap<String, String>>>,
     bot_number: String,
     memory: Memory,
-    profile_manager: ProfileManager,
+    profile_manager: DbProfileManager,
     sent_messages: Arc<Mutex<HashMap<u64, (String, String)>>>, // Timestamp -> (Prompt, Response)
 }
 
 impl SessionManager {
-    pub fn new(signal_client: Arc<Mutex<SignalClient>>, ai_client: VertexClient, bot_number: String) -> Self {
+    pub fn new(signal_client: Arc<Mutex<SignalClient>>, ai_client: VertexClient, bot_number: String, profile_manager: DbProfileManager) -> Self {
         Self {
             signal_client,
             ai_client,
@@ -49,7 +49,7 @@ impl SessionManager {
             model_preferences: Arc::new(Mutex::new(HashMap::new())),
             bot_number,
             memory: Memory::new("data/learned_behaviors.json"),
-            profile_manager: ProfileManager::new("data/profiles"),
+            profile_manager,
             sent_messages: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -122,10 +122,10 @@ impl SessionManager {
                 if should_reply {
                     let profile_key = envelope.source_number.clone().unwrap_or(source.clone());
                     let source_name = envelope.source_name.clone();
-                    info!("Processing prompt from {}", source);
+                    info!("Processing prompt from {}", crate::utils::anonymize(&source));
                     self.process_ai_request(source, group_id, context_key, prompt, timestamp, profile_key, source_name).await;
                 } else {
-                    info!("Ignoring message from {} (No trigger)", source);
+                    info!("Ignoring message from {} (No trigger)", crate::utils::anonymize(&source));
                 }
             } else if let Some(reaction) = data.reaction {
                 // Handle Reaction
@@ -287,14 +287,14 @@ impl SessionManager {
                  let ai_client = self_clone.ai_client.clone();
 
                  tokio::spawn(async move {
-                     if let Ok(current_profile) = profile_manager.get_profile(&profile_key_clone, source_name) {
+                     if let Ok(current_profile) = profile_manager.get_profile(&profile_key_clone, source_name).await {
                          let history_str = format!("User: {}\nBot: {}", prompt_clone, text_clone);
                          match ai_client.analyze_profile_update(&current_profile, &history_str).await {
                              Ok(updated_profile) => {
-                                 if let Err(e) = profile_manager.save_profile(&updated_profile) {
-                                     error!("Failed to save profile for {}: {:?}", profile_key_clone, e);
+                                 if let Err(e) = profile_manager.save_profile(&updated_profile).await {
+                                     error!("Failed to save profile for {}: {:?}", crate::utils::anonymize(&profile_key_clone), e);
                                  } else {
-                                     info!("Updated profile for {}", profile_key_clone);
+                                     info!("Updated profile for {}", crate::utils::anonymize(&profile_key_clone));
                                  }
                              },
                              Err(e) => error!("Failed to analyze profile update: {:?}", e)
@@ -356,7 +356,7 @@ impl SessionManager {
         let mut final_history = Vec::new();
 
         // 1. Inject User Profile
-        if let Ok(profile) = self.profile_manager.get_profile(profile_key, source_name) {
+        if let Ok(profile) = self.profile_manager.get_profile(profile_key, source_name).await {
             let mut profile_context = format!("User Profile for {}:\n", profile_key);
             if let Some(name) = &profile.name {
                 profile_context.push_str(&format!("Name: {}\n", name));
@@ -527,7 +527,7 @@ impl SessionManager {
         match self.ai_client.count_tokens(history_snapshot, "gemini-3-flash-preview").await {
            Ok(count) => {
                if count > TOKEN_LIMIT {
-                   info!("Context window for {} is full ({} tokens > {}). Pruning...", context_key, count, TOKEN_LIMIT);
+                   info!("Context window for {} is full ({} tokens > {}). Pruning...", crate::utils::anonymize(context_key), count, TOKEN_LIMIT);
                    let mut history_guard = self.history.lock().await;
                    if let Some(hist) = history_guard.get_mut(context_key) {
                        // Prune oldest 4 messages (User + Bot x 2) to clear space
@@ -542,7 +542,7 @@ impl SessionManager {
                    }
                }
            },
-           Err(e) => error!("Failed to count tokens for {}: {:?}", context_key, e)
+           Err(e) => error!("Failed to count tokens for {}: {:?}", crate::utils::anonymize(context_key), e)
         }
     }
 }

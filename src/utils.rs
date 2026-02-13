@@ -1,0 +1,21 @@
+use sha2::{Digest, Sha256};
+
+/// Anonymizes a unique identifier (like a phone number or group ID) by hashing it.
+/// Returns a short prefix of the hash for readability (e.g., first 8 chars) or full hash?
+/// User asked for "hashed uuid", implies full or substantial part.
+/// Let's return the full hex hash to be safe and consistent with profile IDs.
+pub fn anonymize(s: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(s.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// Helper to get a shorter display version of the hash (first 8 chars)
+pub fn short_hash(s: &str) -> String {
+    let hash = anonymize(s);
+    if hash.len() > 8 {
+        hash[..8].to_string()
+    } else {
+        hash
+    }
+}

@@ -1,6 +1,8 @@
 mod signal;
 mod ai;
 mod bot;
+mod db;
+mod utils;
 
 use dotenv::dotenv;
 use log::info;
@@ -13,6 +15,21 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     info!("Starting Signal Bot...");
+
+    // Initialize Database
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let db = db::Database::new(&database_url).await?;
+    db.run_migrations().await?;
+
+    // Initialize Profile Manager
+    let encryption_key = std::env::var("PROFILE_ENCRYPTION_KEY").expect("PROFILE_ENCRYPTION_KEY must be set");
+    let profile_manager = ai::memory::DbProfileManager::new(db.pool.clone(), &encryption_key)?;
+
+    // Migrate existing profiles (if any)
+    if let Err(e) = profile_manager.migrate_json_profiles("data/profiles").await {
+        log::warn!("Failed to migrate profiles: {:?}", e);
+        // Continue anyway, maybe folder doesn't exist
+    }
 
     // Initialize AI client
     let project_id = std::env::var("GCP_PROJECT_ID").unwrap_or_else(|_| "piotr-487123".to_string());
@@ -39,12 +56,12 @@ async fn main() -> anyhow::Result<()> {
     // Initialize Session Manager
     // Reuse the phone number we got earlier for the signal client
     let bot_number = signal_phone.clone();
-    let session_manager = bot::SessionManager::new(signal_client.clone(), ai_client, bot_number);
+    let session_manager = bot::SessionManager::new(signal_client.clone(), ai_client, bot_number, profile_manager);
 
     // Event Loop
     while let Some(msg) = rx.recv().await {
         if let Some(source) = msg.envelope.as_ref().map(|e| &e.source) {
-            info!("Received Signal Message from: {}", source);
+            info!("Received Signal Message from: {}", crate::utils::anonymize(source));
         } else {
             info!("Received Signal Message (unknown source)");
         }
