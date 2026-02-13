@@ -2,7 +2,7 @@ pub mod memory;
 
 use serde::Deserialize;
 use serde_json::json;
-use anyhow::{Result, Context};
+use anyhow::Result;
 use reqwest::{Client, StatusCode};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -548,4 +548,81 @@ Structure:
             }
         }
     }
+
+    pub async fn count_tokens(&self, contents: Vec<Content>, model: &str) -> Result<i32> {
+        let url = format!(
+            "{}/projects/{}/locations/{}/publishers/google/models/{}:countTokens",
+            API_ENDPOINT, self.project_id, "global", model
+        );
+
+        let body = json!({
+            "contents": contents
+        });
+
+        // Simple retry for count_tokens as well, though less critical
+        let mut retries = 0;
+        loop {
+            // Rate limit check (shared with generate)
+            self.wait_for_rate_limit().await;
+            let token = self.get_token().await?;
+
+            let resp = self.http_client.post(&url)
+                .bearer_auth(&token)
+                .json(&body)
+                .send()
+                .await?;
+
+            let status = resp.status();
+            if status.is_success() {
+                let json: serde_json::Value = resp.json().await?;
+                if let Some(total_tokens) = json.get("totalTokens").and_then(|t| t.as_i64()) {
+                    return Ok(total_tokens as i32);
+                }
+                anyhow::bail!("No totalTokens in response: {:?}", json);
+            } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                 retries += 1;
+                 if retries > 3 {
+                      let error_text = resp.text().await?;
+                      anyhow::bail!("CountTokens failed after retries: {} - {}", status, error_text);
+                 }
+                 let wait = Duration::from_millis(500 * 2u64.pow(retries));
+                 tokio::time::sleep(wait).await;
+                 continue;
+            } else {
+                 let error_text = resp.text().await?;
+                 anyhow::bail!("CountTokens Error: {} - {}", status, error_text);
+            }
+        }
+    }
+
 }
+
+#[cfg(test)]
+mod tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn test_count_tokens_live() {
+            // Only run if we can (this is an integration test)
+            // It expects gcloud to be authenticated
+            let project_id = std::env::var("GCP_PROJECT_ID").unwrap_or_else(|_| "piotr-487123".to_string());
+            let client = VertexClient::new(&project_id);
+
+            let contents = vec![Content {
+                role: "user".to_string(),
+                parts: vec![Part { text: Some("Hello world".to_string()) }]
+            }];
+
+            match client.count_tokens(contents, "gemini-3-flash-preview").await {
+                Ok(count) => {
+                    println!("Token count: {}", count);
+                    assert!(count > 0);
+                },
+                Err(e) => {
+                     // If it fails due to auth, we might want to skip or fail.
+                     // For manual verification, failure is good to know.
+                     panic!("Count tokens failed: {:?}", e);
+                }
+            }
+        }
+    }

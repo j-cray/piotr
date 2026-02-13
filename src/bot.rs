@@ -4,7 +4,7 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use log::{info, error, warn};
 use rand::RngExt; // For random_bool
 
-use crate::ai::{self, VertexClient, Content, Part, memory::{Memory, ProfileManager}};
+use crate::ai::{VertexClient, Content, Part, memory::{Memory, ProfileManager}};
 use crate::signal::{SignalClient, Envelope};
 use std::time::SystemTime;
 
@@ -15,6 +15,9 @@ type SequencerMap = HashMap<
     String,
     mpsc::UnboundedSender<(DestinationInfo, oneshot::Receiver<BotResponse>)>
 >;
+
+const MODEL_MAX_TOKENS: i32 = 1_000_000; // gemini-3-flash-preview limit
+const TOKEN_LIMIT: i32 = MODEL_MAX_TOKENS * 95 / 100; // 95% of limit
 
 #[derive(Debug)]
 enum BotResponse {
@@ -72,8 +75,10 @@ impl SessionManager {
                     let mut history_guard = self.history.lock().await;
                     let chat_history = history_guard.entry(context_key.clone()).or_insert_with(VecDeque::new);
                     chat_history.push_back(user_content);
-                    if chat_history.len() > 20 { chat_history.pop_front(); }
                 }
+
+                // Manage Context Window (Async, non-blocking to other contexts)
+                self.manage_context_window(&context_key).await;
 
                 let text_lower = text.trim().to_lowercase();
 
@@ -439,7 +444,8 @@ impl SessionManager {
                                     let mut history_guard = history_seq.lock().await;
                                     let hist = history_guard.entry(context_key_seq.clone()).or_insert_with(VecDeque::new);
                                     hist.push_back(model_content.clone());
-                                    if hist.len() > 20 { hist.pop_front(); }
+                                    // No manual pruning here, reliance on manage_context_window called on input
+                                    // But we should probably check here too? No, usually input triggers it is fine.
 
                                     // Retrieve the LAST user prompt to store in sent_messages
                                     // This is a bit tricky because we just pushed the response.
@@ -497,6 +503,46 @@ impl SessionManager {
                 }
             });
             tx
+        }
+    }
+
+    async fn manage_context_window(&self, context_key: &str) {
+        // 1. Get current history snapshot
+        let history_snapshot: Vec<Content> = {
+            let history_guard = self.history.lock().await;
+            if let Some(hist) = history_guard.get(context_key) {
+                // Heuristic: If message count is low, don't bother checking tokens yet.
+                // 1M tokens is A LOT. 30 messages is nothing usually.
+                if hist.len() < 30 {
+                    return;
+                }
+                hist.iter().cloned().collect()
+            } else {
+                return;
+            }
+        };
+
+        // 2. Count Tokens
+        // Using "gemini-3-flash-preview" as the reference model for token counting
+        match self.ai_client.count_tokens(history_snapshot, "gemini-3-flash-preview").await {
+           Ok(count) => {
+               if count > TOKEN_LIMIT {
+                   info!("Context window for {} is full ({} tokens > {}). Pruning...", context_key, count, TOKEN_LIMIT);
+                   let mut history_guard = self.history.lock().await;
+                   if let Some(hist) = history_guard.get_mut(context_key) {
+                       // Prune oldest 4 messages (User + Bot x 2) to clear space
+                       if hist.len() > 4 {
+                           hist.pop_front();
+                           hist.pop_front();
+                           hist.pop_front();
+                           hist.pop_front();
+                       } else {
+                           hist.clear();
+                       }
+                   }
+               }
+           },
+           Err(e) => error!("Failed to count tokens for {}: {:?}", context_key, e)
         }
     }
 }
