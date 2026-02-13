@@ -9,3 +9,7 @@
 # already existing elements were commented out
 
 #/target
+
+# User Data
+data/profiles/
+data/learned_behaviors.json
