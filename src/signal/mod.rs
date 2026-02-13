@@ -54,6 +54,8 @@ pub struct Envelope {
     #[serde(rename = "sourceUuid")]
     pub source_uuid: Option<String>,
     pub timestamp: u64,
+    #[serde(rename = "sourceName")]
+    pub source_name: Option<String>,
     #[serde(rename = "dataMessage")]
     pub data_message: Option<DataMessage>,
 }

@@ -448,6 +448,7 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
         let system_prompt = r#"You are a user profile manager for a chatbot.
 Your task is to analyze the recent conversation history and Update the user's profile.
 - name: Extract the user's name if they mentioned it. Keep existing if known and not changed.
+- nickname: Extract if the user explicitly asks to be called something (e.g. "call me Bob").
 - personality_summary: concise summary of their personality traits observed so far.
 - interaction_style: one or two words description (e.g. "casual", "sarcastic", "formal", "friendly").
 - topics_of_interest: list of specific topics they have discussed or shown interest in.
@@ -460,6 +461,7 @@ Structure:
 {
   "id": "keep_original",
   "name": "string or null",
+  "nickname": "string or null",
   "personality_summary": "string",
   "interaction_style": "string",
   "topics_of_interest": ["string"],

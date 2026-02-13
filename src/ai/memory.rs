@@ -77,6 +77,7 @@ impl Memory {
 pub struct UserProfile {
     pub id: String, // Hashed identifier
     pub name: Option<String>,
+    pub nickname: Option<String>,
     pub personality_summary: String,
     pub interaction_style: String, // e.g. "casual", "technical"
     pub topics_of_interest: Vec<String>,
@@ -103,23 +104,37 @@ impl ProfileManager {
         hex::encode(hasher.finalize())
     }
 
-    pub fn get_profile(&self, raw_id: &str) -> Result<UserProfile> {
+    pub fn get_profile(&self, raw_id: &str, current_name: Option<String>) -> Result<UserProfile> {
         let id = Self::get_profile_id(raw_id);
         let path = format!("{}/{}.json", self.data_dir, id);
 
-        if let Ok(content) = fs::read_to_string(&path) {
-            let profile = serde_json::from_str(&content)?;
-            Ok(profile)
+        let mut profile = if let Ok(content) = fs::read_to_string(&path) {
+            serde_json::from_str(&content)?
         } else {
-            Ok(UserProfile {
-                id,
-                name: None,
+            UserProfile {
+                id: id.clone(),
+                name: current_name.clone(),
+                nickname: None,
                 personality_summary: "New user".to_string(),
                 interaction_style: "neutral".to_string(),
                 topics_of_interest: Vec::new(),
                 last_updated: 0,
-            })
+            }
+        };
+
+        // Auto-update name if it changed in Signal and we don't have a mismatching manual override (conceptually)
+        // For now, always trust Signal display name for 'name' field if provided
+        if let Some(new_name) = current_name {
+            if profile.name.as_ref() != Some(&new_name) {
+                profile.name = Some(new_name);
+                // We should probably save here, or let the caller save if they want.
+                // The caller usually saves after analysis, so maybe we just update in memory for now.
+                // But to be safe lets save it.
+                let _ = self.save_profile(&profile);
+            }
         }
+
+        Ok(profile)
     }
 
     pub fn save_profile(&self, profile: &UserProfile) -> Result<()> {
@@ -177,7 +192,7 @@ mod tests {
         let user_id = "+15551234567";
 
         // Should return default profile for new user
-        let mut profile = manager.get_profile(user_id)?;
+        let mut profile = manager.get_profile(user_id, None)?;
         assert_eq!(profile.name, None);
         assert_eq!(profile.personality_summary, "New user");
 
@@ -187,7 +202,7 @@ mod tests {
         manager.save_profile(&profile)?;
 
         // Reload
-        let loaded = manager.get_profile(user_id)?;
+        let loaded = manager.get_profile(user_id, None)?;
         assert_eq!(loaded.name, Some("Alice".to_string()));
         assert_eq!(loaded.topics_of_interest, vec!["Rust".to_string()]);
         assert_eq!(loaded.id, ProfileManager::get_profile_id(user_id));

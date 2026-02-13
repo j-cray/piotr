@@ -116,8 +116,9 @@ impl SessionManager {
 
                 if should_reply {
                     let profile_key = envelope.source_number.clone().unwrap_or(source.clone());
+                    let source_name = envelope.source_name.clone();
                     info!("Processing prompt from {}: {}", source, prompt);
-                    self.process_ai_request(source, group_id, context_key, prompt, timestamp, profile_key).await;
+                    self.process_ai_request(source, group_id, context_key, prompt, timestamp, profile_key, source_name).await;
                 } else {
                     info!("Ignoring message from {}: {} (No trigger)", source, text);
                 }
@@ -213,7 +214,7 @@ impl SessionManager {
         let _ = sc.send_message(reply_source, reply_group_id, &response, None).await;
     }
 
-    async fn process_ai_request(&self, source: String, group_id: Option<String>, context_key: String, prompt: String, timestamp: u64, profile_key: String) {
+    async fn process_ai_request(&self, source: String, group_id: Option<String>, context_key: String, prompt: String, timestamp: u64, profile_key: String, source_name: Option<String>) {
         // Get or Create Sequencer
         let sequencer_tx = self.get_sequencer_tx(context_key.clone()).await;
 
@@ -253,7 +254,7 @@ impl SessionManager {
             let response = if let Some(model) = model_override {
                 // If model is overridden, skip intent classification
                 info!("Using override model: {}", model);
-                self_clone.generate_text_response("OVERRIDE", &context_key, &profile_key, Some(model)).await
+                self_clone.generate_text_response("OVERRIDE", &context_key, &profile_key, source_name.clone(), Some(model)).await
             } else {
                 // Intent Classification (Auto Mode)
                 let intent = match self_clone.ai_client.classify_intent(&prompt).await {
@@ -268,7 +269,7 @@ impl SessionManager {
                 if intent.starts_with("IMAGE") {
                     self_clone.generate_image_response(&intent, &prompt).await
                 } else {
-                    self_clone.generate_text_response(&intent, &context_key, &profile_key, None).await
+                    self_clone.generate_text_response(&intent, &context_key, &profile_key, source_name.clone(), None).await
                 }
             };
 
@@ -281,7 +282,7 @@ impl SessionManager {
                  let ai_client = self_clone.ai_client.clone();
 
                  tokio::spawn(async move {
-                     if let Ok(current_profile) = profile_manager.get_profile(&profile_key_clone) {
+                     if let Ok(current_profile) = profile_manager.get_profile(&profile_key_clone, source_name) {
                          let history_str = format!("User: {}\nBot: {}", prompt_clone, text_clone);
                          match ai_client.analyze_profile_update(&current_profile, &history_str).await {
                              Ok(updated_profile) => {
@@ -325,7 +326,7 @@ impl SessionManager {
         }
     }
 
-    async fn generate_text_response(&self, intent: &str, context_key: &str, profile_key: &str, override_model: Option<String>) -> BotResponse {
+    async fn generate_text_response(&self, intent: &str, context_key: &str, profile_key: &str, source_name: Option<String>, override_model: Option<String>) -> BotResponse {
         let (model_id, use_search) = if let Some(ref m) = override_model {
              (m.clone(), false) // Disable search by default for overrides
         } else if intent == "SEARCH" {
@@ -350,10 +351,13 @@ impl SessionManager {
         let mut final_history = Vec::new();
 
         // 1. Inject User Profile
-        if let Ok(profile) = self.profile_manager.get_profile(profile_key) {
+        if let Ok(profile) = self.profile_manager.get_profile(profile_key, source_name) {
             let mut profile_context = format!("User Profile for {}:\n", profile_key);
             if let Some(name) = &profile.name {
                 profile_context.push_str(&format!("Name: {}\n", name));
+            }
+            if let Some(nickname) = &profile.nickname {
+                profile_context.push_str(&format!("Nickname: {}\n", nickname));
             }
             profile_context.push_str(&format!("Personality: {}\n", profile.personality_summary));
             profile_context.push_str(&format!("Style: {}\n", profile.interaction_style));
