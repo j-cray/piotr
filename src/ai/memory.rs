@@ -10,7 +10,7 @@ use chacha20poly1305::{
     XChaCha20Poly1305, XNonce
 };
 use rand::Rng;
-use std::str::FromStr;
+
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Interaction {

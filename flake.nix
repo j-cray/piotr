@@ -33,6 +33,8 @@
             qrencode # QR Code Generator
             dbus # DBus for signal-cli
             (python3.withPackages (ps: with ps; [qrcode])) # Python for better QR generation
+            postgresql # For psql, createdb, and libpq
+            sqlx-cli # For database management
           ];
 
           shellHook = ''

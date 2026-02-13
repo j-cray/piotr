@@ -13,3 +13,6 @@
 # User Data
 data/profiles/
 data/learned_behaviors.json
+
+# Database
+data/db/

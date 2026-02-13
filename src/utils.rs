@@ -9,13 +9,3 @@ pub fn anonymize(s: &str) -> String {
     hasher.update(s.as_bytes());
     hex::encode(hasher.finalize())
 }
-
-/// Helper to get a shorter display version of the hash (first 8 chars)
-pub fn short_hash(s: &str) -> String {
-    let hash = anonymize(s);
-    if hash.len() > 8 {
-        hash[..8].to_string()
-    } else {
-        hash
-    }
-}
