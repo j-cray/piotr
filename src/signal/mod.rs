@@ -17,6 +17,23 @@ struct JsonRpcRequest {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
+struct JsonRpcResponse {
+    jsonrpc: String,
+    id: Option<String>,
+    result: Option<Value>,
+    error: Option<JsonRpcError>,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(dead_code)]
+struct JsonRpcError {
+    code: i32,
+    message: String,
+    data: Option<Value>,
+}
+
+#[derive(Deserialize, Debug)]
 pub struct JsonRpcNotification {
     pub method: String,
     pub params: SignalMessage,
@@ -49,6 +66,19 @@ pub struct DataMessage {
     #[serde(rename = "groupInfo")]
     pub group_info: Option<GroupInfo>,
     pub quote: Option<Quote>,
+    pub reaction: Option<Reaction>,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(dead_code)]
+pub struct Reaction {
+    pub emoji: String,
+    #[serde(rename = "targetAuthor")]
+    pub target_author: String,
+    #[serde(rename = "targetSentTimestamp")]
+    pub target_sent_timestamp: u64,
+    #[serde(rename = "isRemove")]
+    pub is_remove: bool,
 }
 
 #[derive(Deserialize, Debug)]
@@ -117,20 +147,25 @@ impl SignalClient {
                 // Log raw line for debugging
                 info!("Raw Signal JSON: {}", line);
 
-                match serde_json::from_str::<JsonRpcNotification>(&line) {
-                    Ok(rpc) => {
-                         if rpc.method == "receive" {
-                            if let Err(e) = tx.send(rpc.params).await {
-                                error!("Receiver dropped: {}", e);
-                                break;
-                            }
-                         }
+                // Try parsing as Notification first
+                if let Ok(rpc) = serde_json::from_str::<JsonRpcNotification>(&line) {
+                     if rpc.method == "receive" {
+                        if let Err(e) = tx.send(rpc.params).await {
+                            error!("Receiver dropped: {}", e);
+                            break;
+                        }
+                     }
+                } else if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(&line) {
+                    // It's a response to a command (success or error)
+                    if let Some(error) = resp.error {
+                        warn!("Signal Command Failed (ID: {:?}): {} - Data: {:?}", resp.id, error.message, error.data);
+                    } else {
+                        // Success response, currently we don't correlate IDs but good to log at debug/info
+                        info!("Signal Command Success (ID: {:?}): {:?}", resp.id, resp.result);
                     }
-                    Err(e) => {
-                        // It might be a response to a command, or just a log line if not pure JSON
-                        // For now, log it.
-                        warn!("Failed to parse signal line as notification: {} - Raw: {}", e, line);
-                    }
+                } else {
+                    // Unknown formation
+                    warn!("Unknown Signal output: {}", line);
                 }
             }
             info!("Signal listener loop ended");

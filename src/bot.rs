@@ -4,8 +4,9 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use log::{info, error, warn};
 use rand::RngExt; // For random_bool
 
-use crate::ai::{self, VertexClient, Content, Part};
+use crate::ai::{self, VertexClient, Content, Part, memory::Memory};
 use crate::signal::{SignalClient, Envelope};
+use std::time::SystemTime;
 
 // Type aliases for cleaner signatures
 type DestinationInfo = (String, Option<String>); // (source, group_id)
@@ -20,7 +21,6 @@ enum BotResponse {
     Text(String),
     Image(String, String), // Filename, Caption
     Error(String),
-    None,
 }
 
 #[derive(Clone)]
@@ -31,6 +31,8 @@ pub struct SessionManager {
     sequencers: Arc<Mutex<SequencerMap>>,
     model_preferences: Arc<Mutex<HashMap<String, String>>>,
     bot_number: String,
+    memory: Memory,
+    sent_messages: Arc<Mutex<HashMap<u64, (String, String)>>>, // Timestamp -> (Prompt, Response)
 }
 
 impl SessionManager {
@@ -42,6 +44,8 @@ impl SessionManager {
             sequencers: Arc::new(Mutex::new(HashMap::new())),
             model_preferences: Arc::new(Mutex::new(HashMap::new())),
             bot_number,
+            memory: Memory::new("data/learned_behaviors.json"),
+            sent_messages: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -113,6 +117,37 @@ impl SessionManager {
                     self.process_ai_request(source, group_id, context_key, prompt, timestamp).await;
                 } else {
                     info!("Ignoring message from {}: {} (No trigger)", source, text);
+                }
+            } else if let Some(reaction) = data.reaction {
+                // Handle Reaction
+                if reaction.target_author == self.bot_number {
+                     // Check if we have the message context
+                     let sent_guard = self.sent_messages.lock().await;
+                     if let Some((prompt, response)) = sent_guard.get(&reaction.target_sent_timestamp) {
+                         let prompt_clone = prompt.clone();
+                         let response_clone = response.clone();
+                         let emoji_clone = reaction.emoji.clone();
+                         let ai_client_clone = self.ai_client.clone();
+                         let memory_clone = self.memory.clone();
+
+                         // Spawn analysis task
+                         tokio::spawn(async move {
+                             info!("Analyzing reaction {} for prompt: {}", emoji_clone, prompt_clone);
+                             match ai_client_clone.analyze_reaction(&prompt_clone, &response_clone, &emoji_clone).await {
+                                 Ok(analysis) => {
+                                     info!("Reaction Analysis: {:?}", analysis);
+                                     if let Err(e) = memory_clone.add_interaction(prompt_clone, response_clone, analysis).await {
+                                         error!("Failed to save interaction: {:?}", e);
+                                     }
+                                 },
+                                 Err(e) => {
+                                     error!("Failed to analyze reaction: {:?}", e);
+                                 }
+                             }
+                         });
+                     } else {
+                         warn!("Received reaction for unknown message timestamp: {}", reaction.target_sent_timestamp);
+                     }
                 }
             }
         }
@@ -263,8 +298,8 @@ impl SessionManager {
     }
 
     async fn generate_text_response(&self, intent: &str, context_key: &str, override_model: Option<String>) -> BotResponse {
-        let (model_id, use_search) = if let Some(m) = override_model {
-             (m, false) // Disable search by default for overrides
+        let (model_id, use_search) = if let Some(ref m) = override_model {
+             (m.clone(), false) // Disable search by default for overrides
         } else if intent == "SEARCH" {
             ("gemini-3-flash-preview".to_string(), true)
         } else if intent == "PRO" {
@@ -283,7 +318,29 @@ impl SessionManager {
             }
         };
 
-        match self.ai_client.generate_content(history_vec, &model_id, use_search).await {
+        // Inject Learned Examples if available
+        let mut final_history = Vec::new();
+        if !override_model.is_some() {
+             // Retrieve relevant examples (simple latest/best for now)
+             let examples = self.memory.get_relevant_examples("", 3).await;
+             if !examples.is_empty() {
+                 let mut examples_text = String::from("Here are some examples of your best past responses that people liked:\n");
+                 for ex in examples {
+                     examples_text.push_str(&format!("User: {}\nYou: {}\n---\n", ex.prompt, ex.response));
+                 }
+                 final_history.push(Content {
+                     role: "user".to_string(),
+                     parts: vec![Part { text: Some(examples_text) }]
+                 });
+                 final_history.push(Content {
+                     role: "model".to_string(),
+                     parts: vec![Part { text: Some("Understood. I will try to be as witty and helpful as those examples.".to_string()) }]
+                 });
+             }
+        }
+        final_history.extend(history_vec);
+
+        match self.ai_client.generate_content(final_history, &model_id, use_search).await {
             Ok(text) => {
                 info!("AI Response: {}", text);
                 BotResponse::Text(text)
@@ -306,6 +363,7 @@ impl SessionManager {
             // Spawn Sequencer Task for this context
             let history_seq = self.history.clone();
             let signal_client_seq = self.signal_client.clone();
+            let sent_messages_seq = self.sent_messages.clone();
             let context_key_seq = context_key.clone();
 
             tokio::spawn(async move {
@@ -324,8 +382,29 @@ impl SessionManager {
                                 {
                                     let mut history_guard = history_seq.lock().await;
                                     let hist = history_guard.entry(context_key_seq.clone()).or_insert_with(VecDeque::new);
-                                    hist.push_back(model_content);
+                                    hist.push_back(model_content.clone());
                                     if hist.len() > 20 { hist.pop_front(); }
+
+                                    // Retrieve the LAST user prompt to store in sent_messages
+                                    // This is a bit tricky because we just pushed the response.
+                                    // The user prompt is the one before.
+                                    if hist.len() >= 2 {
+                                        if let Some(last_user) = hist.get(hist.len() - 2) {
+                                             if last_user.role == "user" {
+                                                 if let Some(user_text) = last_user.parts.first().and_then(|p| p.text.clone()) {
+                                                     // We have (User Prompt, Bot Response)
+                                                     // We need the timestamp of the *response* we are about to send.
+                                                     // Signal sends timestamps in ms.
+                                                     let now_ts = SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+                                                      {
+                                                          let mut sent_guard = sent_messages_seq.lock().await;
+                                                          sent_guard.insert(now_ts, (user_text, text.clone()));
+                                                          // Cleanup old sent messages (optional, skipping for brevity but good practice)
+                                                      }
+                                                 }
+                                             }
+                                        }
+                                    }
                                 }
 
                                 // Send Split Messages
@@ -351,7 +430,6 @@ impl SessionManager {
                                 let mut sc = signal_client_seq.lock().await;
                                 let _ = sc.send_message(&reply_source, reply_group_id.as_deref(), &err_msg, None).await;
                             },
-                            BotResponse::None => {}
                         }
 
                         // Stop typing

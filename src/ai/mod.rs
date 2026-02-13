@@ -1,3 +1,5 @@
+pub mod memory;
+
 use serde::Deserialize;
 use serde_json::json;
 use anyhow::{Result, Context};
@@ -49,6 +51,7 @@ pub struct Part {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[allow(dead_code)]
 struct GenerateContentResponse {
     candidates: Option<Vec<Candidate>>,
     #[serde(rename = "promptFeedback")]
@@ -56,6 +59,7 @@ struct GenerateContentResponse {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[allow(dead_code)]
 struct Candidate {
     content: Option<Content>,
     #[serde(rename = "finishReason")]
@@ -67,6 +71,7 @@ struct Candidate {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[allow(dead_code)]
 struct PromptFeedback {
     #[serde(rename = "blockReason")]
     block_reason: Option<String>,
@@ -75,10 +80,18 @@ struct PromptFeedback {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[allow(dead_code)]
 struct SafetyRating {
     category: String,
     probability: String,
     blocked: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
+pub struct ReactionAnalysis {
+    pub sentiment_score: f32, // -1.0 (Negative) to 1.0 (Positive)
+    pub reasoning: String,
+    pub tags: Vec<String>, // e.g. "sarcastic", "supportive", "confused"
 }
 
 
@@ -329,6 +342,105 @@ impl VertexClient {
                  log::error!("Intent classification failed non-retryable: {}", status);
                  return Ok("FLASH".to_string());
              }
+        }
+    }
+
+    pub async fn analyze_reaction(&self, user_prompt: &str, bot_response: &str, emoji: &str) -> Result<ReactionAnalysis> {
+        let system_prompt = r#"You are an emotional intelligence analyst for a chat bot.
+Your task is to analyze a user's emoji reaction to a bot's response in the context of their conversation.
+Determine if the reaction is POSITIVE (reinforces behavior) or NEGATIVE (discourages behavior).
+Account for sarcasm (e.g., crying emoji can be positive laughter, or negative sadness).
+Output JSON ONLY with the following structure:
+{
+  "sentiment_score": float, // -1.0 to 1.0.
+  "reasoning": string, // Explanation of your analysis.
+  "tags": [string] // List of keywords describing the interaction.
+}
+Example:
+Input: User="I broke prod", Bot="Good job", Emoji="😭"
+Output: { "sentiment_score": -0.8, "reasoning": "User is distressed about breaking prod, bot was sarcastic but user is genuinely upset.", "tags": ["distress", "sarcasm_failure"] }
+Example:
+Input: User="Tell joke", Bot="Why did chicken cross road?", Emoji="😂"
+Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "tags": ["humor", "success"] }
+"#;
+
+        let user_msg = format!(
+            "User: {}\nBot: {}\nUser Reacted With: {}",
+            user_prompt, bot_response, emoji
+        );
+
+        let contents = vec![Content {
+            role: "user".to_string(),
+            parts: vec![Part { text: Some(user_msg) }],
+        }];
+
+        let url = format!(
+            "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
+            API_ENDPOINT, self.project_id, "global", "gemini-3-flash-preview"
+        );
+
+        let body = json!({
+            "systemInstruction": {
+                "parts": [{ "text": system_prompt }]
+            },
+            "contents": contents,
+            "generationConfig": {
+                "temperature": 0.2, // Low temp for analysis
+                "responseMimeType": "application/json"
+            }
+        });
+
+        let mut retries = 0;
+        loop {
+            self.wait_for_rate_limit().await;
+            let token = self.get_token().await?;
+
+            let resp = self.http_client.post(&url)
+                .bearer_auth(&token)
+                .json(&body)
+                .send()
+                .await?;
+
+            let status = resp.status();
+            if status.is_success() {
+                 let json: serde_json::Value = resp.json().await?;
+                 // Extract text
+                 if let Some(candidates) = json.get("candidates").and_then(|c| c.as_array()) {
+                    if let Some(first) = candidates.first() {
+                         if let Some(parts) = first.get("content").and_then(|c| c.get("parts")).and_then(|p| p.as_array()) {
+                            if let Some(text_part) = parts.first() {
+                                if let Some(text) = text_part.get("text").and_then(|t| t.as_str()) {
+                                    // Parse JSON from text
+                                    match serde_json::from_str::<ReactionAnalysis>(text) {
+                                        Ok(analysis) => return Ok(analysis),
+                                        Err(e) => {
+                                            log::error!("Failed to parse analysis JSON: {}. Text:: {}", e, text);
+                                            // Fallback
+                                            return Ok(ReactionAnalysis {
+                                                sentiment_score: 0.0,
+                                                reasoning: format!("Failed to parse: {}", text),
+                                                tags: vec!["parse_error".to_string()]
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                anyhow::bail!("No content in analysis response");
+            } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                 retries += 1;
+                 if retries > 3 {
+                      anyhow::bail!("Analysis failed after retries: {}", status);
+                 }
+                 let wait = Duration::from_millis(500 * 2u64.pow(retries));
+                 tokio::time::sleep(wait).await;
+                 continue;
+            } else {
+                 let error_text = resp.text().await?;
+                 anyhow::bail!("Analysis Error: {} - {}", status, error_text);
+            }
         }
     }
 }

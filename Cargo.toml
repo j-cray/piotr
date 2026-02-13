@@ -22,3 +22,6 @@ image = "0.24.7" # For QR code image manipulation if needed
 rand = "0.10.0"
 textwrap = "0.16.2"
 base64 = "0.22.1"
+
+[dev-dependencies]
+tempfile = "3.25.0"
