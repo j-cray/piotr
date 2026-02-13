@@ -122,10 +122,10 @@ impl SessionManager {
                 if should_reply {
                     let profile_key = envelope.source_number.clone().unwrap_or(source.clone());
                     let source_name = envelope.source_name.clone();
-                    info!("Processing prompt from {}: {}", source, prompt);
+                    info!("Processing prompt from {}", source);
                     self.process_ai_request(source, group_id, context_key, prompt, timestamp, profile_key, source_name).await;
                 } else {
-                    info!("Ignoring message from {}: {} (No trigger)", source, text);
+                    info!("Ignoring message from {} (No trigger)", source);
                 }
             } else if let Some(reaction) = data.reaction {
                 // Handle Reaction
@@ -141,7 +141,7 @@ impl SessionManager {
 
                          // Spawn analysis task
                          tokio::spawn(async move {
-                             info!("Analyzing reaction {} for prompt: {}", emoji_clone, prompt_clone);
+                             info!("Analyzing reaction {} for prompt", emoji_clone);
                              match ai_client_clone.analyze_reaction(&prompt_clone, &response_clone, &emoji_clone).await {
                                  Ok(analysis) => {
                                      info!("Reaction Analysis: {:?}", analysis);
@@ -310,7 +310,7 @@ impl SessionManager {
 
     async fn generate_image_response(&self, intent: &str, prompt: &str) -> BotResponse {
         let model = if intent == "IMAGE_4" { "imagen-4.0-generate-001" } else { "imagen-3.0-generate-001" };
-        info!("Attempting to generate image with model: {} for prompt: {}", model, prompt);
+        info!("Attempting to generate image with model: {} for prompt", model);
 
         match self.ai_client.generate_image(prompt, model).await {
             Ok(image_bytes) => {
@@ -403,7 +403,7 @@ impl SessionManager {
 
         match self.ai_client.generate_content(final_history, &model_id, use_search).await {
             Ok(text) => {
-                info!("AI Response: {}", text);
+                info!("AI Response generated (len: {})", text.len());
                 BotResponse::Text(text)
             },
             Err(e) => {

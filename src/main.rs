@@ -37,12 +37,17 @@ async fn main() -> anyhow::Result<()> {
     info!("Signal listener started. Waiting for messages...");
 
     // Initialize Session Manager
-    let bot_number = std::env::var("SIGNAL_PHONE_NUMBER").unwrap_or_else(|_| "+12506417114".to_string());
+    // Reuse the phone number we got earlier for the signal client
+    let bot_number = signal_phone.clone();
     let session_manager = bot::SessionManager::new(signal_client.clone(), ai_client, bot_number);
 
     // Event Loop
     while let Some(msg) = rx.recv().await {
-        info!("Received Signal Message: {:?}", msg);
+        if let Some(source) = msg.envelope.as_ref().map(|e| &e.source) {
+            info!("Received Signal Message from: {}", source);
+        } else {
+            info!("Received Signal Message (unknown source)");
+        }
 
         if let Some(envelope) = msg.envelope {
              // Clone SessionManager for async handling (it's cheap, just Arcs)

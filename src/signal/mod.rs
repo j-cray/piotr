@@ -110,7 +110,7 @@ pub struct SignalClient {
 
 impl SignalClient {
     pub async fn new(user_phone: &str) -> Result<Self> {
-        info!("Starting signal-cli for user: {}", user_phone);
+        info!("Starting signal-cli for user: [REDACTED]");
         let mut child = Command::new("signal-cli")
             .arg("-u")
             .arg(user_phone)
@@ -146,8 +146,8 @@ impl SignalClient {
                 // But typically it sends events.
                 // Let's try to parse as generic JSON first to see what we get, or directly to SignalMessage
 
-                // Log raw line for debugging
-                info!("Raw Signal JSON: {}", line);
+                // Log raw line for debugging (REDACTED)
+                log::debug!("Raw Signal Line received");
 
                 // Try parsing as Notification first
                 if let Ok(rpc) = serde_json::from_str::<JsonRpcNotification>(&line) {
@@ -257,7 +257,8 @@ impl SignalClient {
     async fn send_payload(&mut self, payload: &Value) -> Result<()> {
         if let Some(stdin) = &mut self.stdin {
              let payload_str = serde_json::to_string(payload)?;
-             info!("Sending Signal RPC: {}", payload_str);
+             info!("Sending Signal RPC");
+             log::debug!("Sending Signal RPC payload: [REDACTED]");
              stdin.write_all(payload_str.as_bytes()).await?;
              stdin.write_all(b"\n").await?;
              stdin.flush().await?;

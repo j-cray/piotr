@@ -172,7 +172,7 @@ impl VertexClient {
                 let response: GenerateContentResponse = match serde_json::from_str(&resp_text) {
                     Ok(r) => r,
                     Err(e) => {
-                         log::error!("Failed to parse Vertex AI response: {}. Raw text: {}", e, resp_text);
+                         log::error!("Failed to parse Vertex AI response: {}. Raw text length: {}", e, resp_text.len());
                          return Ok("I ... I don't know what happened. The wires... they crossed.".to_string());
                     }
                 };
@@ -200,7 +200,7 @@ impl VertexClient {
                 }
 
                 // Fallback if structure is oddly empty even with success
-                log::warn!("Vertex AI returned success but no content found. Full response: {:?}", resp_text);
+                log::warn!("Vertex AI returned success but no content found.");
                 return Ok("I have nothing to say about that.".to_string());
 
             } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
@@ -280,7 +280,7 @@ impl VertexClient {
     }
 
     pub async fn classify_intent(&self, prompt: &str) -> Result<String> {
-        log::info!("Classifying intent for prompt: '{}'", prompt);
+        log::info!("Classifying intent for prompt");
         let contents = vec![Content {
             role: "user".to_string(),
             parts: vec![Part { text: Some(prompt.to_string()) }],
@@ -414,7 +414,7 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
                                     match serde_json::from_str::<ReactionAnalysis>(text) {
                                         Ok(analysis) => return Ok(analysis),
                                         Err(e) => {
-                                            log::error!("Failed to parse analysis JSON: {}. Text:: {}", e, text);
+                                            log::error!("Failed to parse analysis JSON: {}. Text length: {}", e, text.len());
                                             // Fallback
                                             return Ok(ReactionAnalysis {
                                                 sentiment_score: 0.0,
@@ -523,7 +523,7 @@ Structure:
                                             return Ok(profile);
                                         },
                                         Err(e) => {
-                                            log::error!("Failed to parse profile update JSON: {}. Text: {}", e, text);
+                                            log::error!("Failed to parse profile update JSON: {}. Text length: {}", e, text.len());
                                             // Fail safe: return original
                                             return Ok(current_profile.clone());
                                         }
