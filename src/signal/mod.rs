@@ -112,6 +112,8 @@ impl SignalClient {
     pub async fn new(user_phone: &str) -> Result<Self> {
         info!("Starting signal-cli for user: [REDACTED]");
         let mut child = Command::new("signal-cli")
+            .arg("--config")
+            .arg("data/signal-cli")
             .arg("-u")
             .arg(user_phone)
             .arg("--output=json")

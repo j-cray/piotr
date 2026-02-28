@@ -25,7 +25,7 @@ EOF
 
 # Run signal-cli in the background, redirecting output to a file
 # usage of dbus-run-session is required for signal-cli
-dbus-run-session --config-file=./dbus-session.conf -- signal-cli link -n "piotr-bot" > link_output.log 2>&1 &
+dbus-run-session --config-file=./dbus-session.conf -- signal-cli --config data/signal-cli link -n "piotr-bot" > link_output.log 2>&1 &
 SIGNAL_PID=$!
 
 # Wait for the URI to appear in the log file

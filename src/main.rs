@@ -35,8 +35,11 @@ async fn main() -> anyhow::Result<()> {
     let project_id = std::env::var("GCP_PROJECT_ID").unwrap_or_else(|_| "piotr-487123".to_string());
     let ai_client = ai::VertexClient::new(&project_id);
 
-    // Initialize Signal service
-    let signal_phone = std::env::var("SIGNAL_PHONE_NUMBER").expect("SIGNAL_PHONE_NUMBER must be set in .env");
+    // Initialize Signal service - Auto-detect linked number
+    let accounts_json = std::fs::read_to_string("data/signal-cli/data/accounts.json")
+        .expect("Failed to read accounts.json. Did you run the linking script?");
+    let accounts: serde_json::Value = serde_json::from_str(&accounts_json).expect("Invalid accounts.json format");
+    let signal_phone = accounts["accounts"][0]["number"].as_str().expect("Could not find number in accounts.json").to_string();
 
     let mut signal_client_raw = match signal::SignalClient::new(&signal_phone).await {
         Ok(client) => client,
