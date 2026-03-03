@@ -66,10 +66,18 @@ impl SessionManager {
                 // Determine Context Key (Group ID or Sender)
                 let context_key = group_id.clone().unwrap_or_else(|| source.clone());
 
+                let display_name = envelope.source_name.clone()
+                    .unwrap_or_else(|| envelope.source_number.clone().unwrap_or_else(|| source.clone()));
+                let history_text = if is_group {
+                    format!("{}: {}", display_name, text)
+                } else {
+                    text.clone()
+                };
+
                 // 1. Add User Message to History
                 let user_content = Content {
                     role: "user".to_string(),
-                    parts: vec![Part { text: Some(text.clone()) }],
+                    parts: vec![Part { text: Some(history_text) }],
                 };
                 {
                     let mut history_guard = self.history.lock().await;
@@ -356,8 +364,9 @@ impl SessionManager {
         let mut final_history = Vec::new();
 
         // 1. Inject User Profile
-        if let Ok(profile) = self.profile_manager.get_profile(profile_key, source_name).await {
-            let mut profile_context = format!("User Profile for {}:\n", profile_key);
+        if let Ok(profile) = self.profile_manager.get_profile(profile_key, source_name.clone()).await {
+            let display_name_for_profile = source_name.unwrap_or_else(|| profile_key.to_string());
+            let mut profile_context = format!("User Profile for {}:\n", display_name_for_profile);
             if let Some(name) = &profile.name {
                 profile_context.push_str(&format!("Name: {}\n", name));
             }
@@ -369,7 +378,7 @@ impl SessionManager {
             if !profile.topics_of_interest.is_empty() {
                 profile_context.push_str(&format!("Interests: {}\n", profile.topics_of_interest.join(", ")));
             }
-            profile_context.push_str("\nUse this info to personalize your response. If you know their name, use it naturally.");
+            profile_context.push_str("\nUse this info to personalize your response. If you know their name, use it naturally. Note: In group chats, this profile only applies to the user who just messaged you.");
 
             final_history.push(Content {
                 role: "user".to_string(),
