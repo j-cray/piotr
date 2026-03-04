@@ -6,7 +6,8 @@ mod utils;
 mod state_manager;
 
 use dotenv::dotenv;
-use tracing::info;
+use tracing::{info, error, Instrument};
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -69,14 +70,33 @@ async fn main() -> anyhow::Result<()> {
              // Clone SessionManager for async handling (it's cheap, just Arcs)
              let sm = session_manager.clone();
 
+             // Extract some info for the span
+             let source_for_span = envelope.source.clone();
+             let source_for_closure = envelope.source.clone();
+             let ts = envelope.timestamp;
+
              // Acquire a permit before spawning. This blocks if there are 100 concurrent tasks already.
              let permit = semaphore.clone().acquire_owned().await.expect("Semaphore closed");
+
+             let span = tracing::info_span!("handle_message", source = %crate::utils::anonymize(&source_for_span), ts = ts);
 
              tokio::spawn(async move {
                  // The permit is held for the duration of this task, limiting concurrency.
                  let _permit = permit;
-                 sm.handle_message(envelope).await;
-             });
+
+                 let result = tokio::time::timeout(
+                     Duration::from_secs(60),
+                     sm.handle_message(envelope)
+                 ).await;
+
+                 if let Err(_) = result {
+                     error!(
+                         "Message processing timed out after 60 seconds (Source: {}, TS: {})",
+                         crate::utils::anonymize(&source_for_closure),
+                         ts
+                     );
+                 }
+             }.instrument(span));
         }
     }
     Ok(())
