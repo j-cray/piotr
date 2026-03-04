@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{Mutex, mpsc};
 use log::{info, error, warn};
 use rand::RngExt; // For random_bool
 
@@ -10,10 +10,18 @@ use std::time::SystemTime;
 
 // Type aliases for cleaner signatures
 type DestinationInfo = (String, Option<String>); // (source, group_id)
+
+struct ContextRequest {
+    prompt: String,
+    timestamp: u64,
+    profile_key: String,
+    source_name: Option<String>,
+}
+
 // Sequencer map stores a sender to a task that processes responses sequentially for a context
 type SequencerMap = HashMap<
     String,
-    mpsc::UnboundedSender<(DestinationInfo, oneshot::Receiver<BotResponse>)>
+    mpsc::UnboundedSender<(DestinationInfo, ContextRequest)>
 >;
 
 const MODEL_MAX_TOKENS: i32 = 1_000_000; // gemini-3-flash-preview limit
@@ -111,14 +119,17 @@ impl SessionManager {
                     false
                 };
 
+                // Explicit triggers
+                let is_mentioned = text_lower.contains("@piotr") || text_lower.contains("piotr");
+
                 let (should_reply, prompt) = if is_group {
-                    if text_lower.starts_with("piotr") || text_lower.starts_with("hey piotr") || is_quote_reply {
+                    if is_quote_reply || is_mentioned {
                         (true, text.clone())
                     } else {
-                        // Random joke logic
+                        // Random joke logic is now simple eavesdropping participation
                         let mut rng = rand::rng();
-                        if rng.random_bool(0.02) {
-                            (true, "Tell me a short, clean joke.".to_string())
+                        if rng.random_bool(0.01) { // 1% chance to just chime in
+                            (true, text.clone())
                         } else {
                             (false, String::new())
                         }
@@ -130,8 +141,19 @@ impl SessionManager {
                 if should_reply {
                     let profile_key = envelope.source_number.clone().unwrap_or(source.clone());
                     let source_name = envelope.source_name.clone();
+
+                    // Prepend Thread Context if quoting someone else
+                    let mut final_prompt = prompt.clone();
+                    if let Some(quote) = &data.quote {
+                        if quote.author != self.bot_number {
+                            // User is replying to someone else, but triggered Piotr
+                            let author_name = if quote.author == profile_key { "themselves" } else { &quote.author };
+                            final_prompt = format!("(Replying to quote from {}): {}", author_name, prompt);
+                        }
+                    }
+
                     info!("Processing prompt from {}", crate::utils::anonymize(&source));
-                    self.process_ai_request(source, group_id, context_key, prompt, timestamp, profile_key, source_name).await;
+                    self.process_ai_request(source, group_id, context_key, final_prompt, timestamp, profile_key, source_name).await;
                 } else {
                     info!("Ignoring message from {} (No trigger)", crate::utils::anonymize(&source));
                 }
@@ -229,91 +251,20 @@ impl SessionManager {
 
     async fn process_ai_request(&self, source: String, group_id: Option<String>, context_key: String, prompt: String, timestamp: u64, profile_key: String, source_name: Option<String>) {
         // Get or Create Sequencer
-        let sequencer_tx = self.get_sequencer_tx(context_key.clone()).await;
+        let sequencer_tx = self.get_sequencer_tx(context_key.clone(), group_id.clone()).await;
 
-        // Create Result Channel
-        let (worker_tx, worker_rx) = oneshot::channel::<BotResponse>();
-
-        // Send Ticket to Sequencer (Preserves Order)
-        let dest_info = (source.clone(), group_id.clone());
-        if let Err(e) = sequencer_tx.send((dest_info, worker_rx)) {
-            error!("Failed to send to sequencer: {}", e);
-            return;
-        }
-
-        // Check for Model Preference
-        let model_override = {
-            let prefs = self.model_preferences.lock().await;
-            prefs.get(&context_key).cloned()
+        let request = ContextRequest {
+            prompt,
+            timestamp,
+            profile_key,
+            source_name,
         };
 
-        // Spawn Worker Task
-        let self_clone = self.clone();
-        tokio::spawn(async move {
-            // Send Read Receipt
-            {
-                let mut sc = self_clone.signal_client.lock().await;
-                if let Err(e) = sc.send_receipt(&source, timestamp).await {
-                    warn!("Failed to send read receipt: {:?}", e);
-                }
-            }
-
-            // Start Typing
-            {
-                let mut sc = self_clone.signal_client.lock().await;
-                let _ = sc.send_typing(&source, group_id.as_deref()).await;
-            }
-
-            let response = if let Some(model) = model_override {
-                // If model is overridden, skip intent classification
-                info!("Using override model: {}", model);
-                self_clone.generate_text_response("OVERRIDE", &context_key, &profile_key, source_name.clone(), Some(model)).await
-            } else {
-                // Intent Classification (Auto Mode)
-                let intent = match self_clone.ai_client.classify_intent(&prompt).await {
-                    Ok(i) => i,
-                    Err(e) => {
-                        error!("Intent classification failed: {:?}", e);
-                        "FLASH".to_string()
-                    }
-                };
-                info!("Classified intent: {}", intent);
-
-                if intent.starts_with("IMAGE") {
-                    self_clone.generate_image_response(&intent, &prompt).await
-                } else {
-                    self_clone.generate_text_response(&intent, &context_key, &profile_key, source_name.clone(), None).await
-                }
-            };
-
-            // Trigger Profile Update
-            if let BotResponse::Text(ref text_response) = response {
-                 let prompt_clone = prompt.clone();
-                 let text_clone = text_response.clone();
-                 let profile_key_clone = profile_key.clone();
-                 let profile_manager = self_clone.profile_manager.clone();
-                 let ai_client = self_clone.ai_client.clone();
-
-                 tokio::spawn(async move {
-                     if let Ok(current_profile) = profile_manager.get_profile(&profile_key_clone, source_name).await {
-                         let history_str = format!("User: {}\nBot: {}", prompt_clone, text_clone);
-                         match ai_client.analyze_profile_update(&current_profile, &history_str).await {
-                             Ok(updated_profile) => {
-                                 if let Err(e) = profile_manager.save_profile(&updated_profile).await {
-                                     error!("Failed to save profile for {}: {:?}", crate::utils::anonymize(&profile_key_clone), e);
-                                 } else {
-                                     info!("Updated profile for {}", crate::utils::anonymize(&profile_key_clone));
-                                 }
-                             },
-                             Err(e) => error!("Failed to analyze profile update: {:?}", e)
-                         }
-                     }
-                 });
-            }
-
-            // Send result to Sequencer
-            let _ = worker_tx.send(response);
-        });
+        // Send Ticket to Sequencer (Preserves Contextual Order)
+        let dest_info = (source.clone(), group_id.clone());
+        if let Err(e) = sequencer_tx.send((dest_info, request)) {
+            error!("Failed to send request to sequencer: {}", e);
+        }
     }
 
     async fn generate_image_response(&self, intent: &str, prompt: &str) -> BotResponse {
@@ -339,7 +290,7 @@ impl SessionManager {
         }
     }
 
-    async fn generate_text_response(&self, intent: &str, context_key: &str, profile_key: &str, source_name: Option<String>, override_model: Option<String>) -> BotResponse {
+    async fn generate_text_response(&self, intent: &str, context_key: &str, profile_key: &str, source_name: Option<String>, override_model: Option<String>, group_id: Option<String>) -> BotResponse {
         let (model_id, use_search) = if let Some(ref m) = override_model {
              (m.clone(), false) // Disable search by default for overrides
         } else if intent == "SEARCH" {
@@ -385,12 +336,39 @@ impl SessionManager {
                 parts: vec![Part { text: Some(format!("SYSTEM NOTE: {}", profile_context)) }]
             });
             final_history.push(Content {
+            role: "model".to_string(),
+            parts: vec![Part { text: Some("Understood. I will personalize my response based on this profile.".to_string()) }]
+        });
+    }
+
+    // 2. Inject Group Profile (if applicable)
+    if let Some(gid) = &group_id {
+        if let Ok(group_profile) = self.profile_manager.get_group_profile(gid, None).await {
+            let mut group_context = format!("Group Chat Profile for {}:\n", group_profile.group_name.as_deref().unwrap_or("this group"));
+            group_context.push_str(&format!("Vibe: {}\n", group_profile.group_vibe));
+            if !group_profile.inside_jokes.is_empty() {
+                group_context.push_str(&format!("Inside Jokes/Memes: {}\n", group_profile.inside_jokes.join(", ")));
+            }
+            if !group_profile.common_topics.is_empty() {
+                group_context.push_str(&format!("Common Topics: {}\n", group_profile.common_topics.join(", ")));
+            }
+            if !group_profile.important_memories.is_empty() {
+                 group_context.push_str(&format!("Important Memories: {}\n", group_profile.important_memories.join(", ")));
+            }
+            group_context.push_str("\nUse this info to understand the context of the group chat. Reference inside jokes sparingly but accurately if the context fits.");
+
+            final_history.push(Content {
+                role: "user".to_string(),
+                parts: vec![Part { text: Some(format!("SYSTEM NOTE: {}", group_context)) }]
+            });
+            final_history.push(Content {
                 role: "model".to_string(),
-                parts: vec![Part { text: Some("Understood. I will personalize my response based on this profile.".to_string()) }]
+                parts: vec![Part { text: Some("Understood. I am aware of the group's vibe and history.".to_string()) }]
             });
         }
+    }
 
-        if !override_model.is_some() {
+    if !override_model.is_some() {
              // Retrieve relevant examples (simple latest/best for now)
              let examples = self.memory.get_relevant_examples("", 3).await;
              if !examples.is_empty() {
@@ -422,12 +400,12 @@ impl SessionManager {
         }
     }
 
-    async fn get_sequencer_tx(&self, context_key: String) -> mpsc::UnboundedSender<(DestinationInfo, oneshot::Receiver<BotResponse>)> {
+    async fn get_sequencer_tx(&self, context_key: String, group_id_context: Option<String>) -> mpsc::UnboundedSender<(DestinationInfo, ContextRequest)> {
         let mut seq_map = self.sequencers.lock().await;
         if let Some(tx) = seq_map.get(&context_key) {
             tx.clone()
         } else {
-            let (tx, mut rx) = mpsc::unbounded_channel::<(DestinationInfo, oneshot::Receiver<BotResponse>)>();
+            let (tx, mut rx) = mpsc::unbounded_channel::<(DestinationInfo, ContextRequest)>();
             seq_map.insert(context_key.clone(), tx.clone());
 
             // Spawn Sequencer Task for this context
@@ -436,12 +414,122 @@ impl SessionManager {
             let sent_messages_seq = self.sent_messages.clone();
             let context_key_seq = context_key.clone();
 
-            tokio::spawn(async move {
-                while let Some((dest_info, result_rx)) = rx.recv().await {
-                    let (reply_source, reply_group_id) = dest_info;
+            let _memory_seq = self.memory.clone();
+            let ai_client_seq = self.ai_client.clone();
+            let profile_manager_seq = self.profile_manager.clone();
+            let model_prefs_seq = self.model_preferences.clone();
+            let self_clone_seq = self.clone();
 
-                    // Wait for result from worker
-                    if let Ok(response) = result_rx.await {
+            tokio::spawn(async move {
+                while let Some((dest_info, request)) = rx.recv().await {
+                    let (reply_source, reply_group_id) = dest_info;
+                    let group_id_spawn_clone = group_id_context.clone();
+
+                    // Send Read Receipt
+                    {
+                        let mut sc = signal_client_seq.lock().await;
+                        if let Err(e) = sc.send_receipt(&reply_source, request.timestamp).await {
+                            warn!("Failed to send read receipt: {:?}", e);
+                        }
+                    }
+
+                    // Start Typing
+                    {
+                        let mut sc = signal_client_seq.lock().await;
+                        let _ = sc.send_typing(&reply_source, reply_group_id.as_deref()).await;
+                    }
+
+                    // Pre-Processing (Intent & Mention Differentiation)
+                    // Differentiate a passing mention from a direct address
+                    let prompt_lower = request.prompt.to_lowercase();
+                    let is_mentioned = prompt_lower.contains("piotr") || prompt_lower.contains("@piotr");
+                    let mut should_abort_generation = false;
+
+                    let model_override = {
+                        let prefs = model_prefs_seq.lock().await;
+                        prefs.get(&context_key_seq).cloned()
+                    };
+
+                    let response = if let Some(model) = model_override {
+                        info!("Using override model: {}", model);
+                        self_clone_seq.generate_text_response("OVERRIDE", &context_key_seq, &request.profile_key, request.source_name.clone(), Some(model), group_id_context.clone()).await
+                    } else {
+                        // Intent Classification (Auto Mode)
+                        let mut prompt_to_test = request.prompt.clone();
+                        if is_mentioned {
+                            // Let the LLM also decide if this string is talking ABOUT piotr or TO piotr (this helps save tokens/spams if we catch early)
+                            prompt_to_test = format!("SYSTEM: Is the user talking *to* you or just talking *about* you? Reply IGNORE if they are just mentioning you without expecting a response. Otherwise, respond normally to: {}", request.prompt);
+                        }
+
+                        let intent = match ai_client_seq.classify_intent(&prompt_to_test).await {
+                            Ok(i) => i,
+                            Err(e) => {
+                                error!("Intent classification failed: {:?}", e);
+                                "FLASH".to_string()
+                            }
+                        };
+                        info!("Classified intent: {}", intent);
+
+                        if intent.starts_with("IMAGE") {
+                            self_clone_seq.generate_image_response(&intent, &request.prompt).await
+                        } else if intent == "IGNORE" {
+                            should_abort_generation = true;
+                            // Returning an empty text avoids the signal send logic below
+                            BotResponse::Error(String::new())
+                        } else {
+                            self_clone_seq.generate_text_response(&intent, &context_key_seq, &request.profile_key, request.source_name.clone(), None, group_id_context.clone()).await
+                        }
+                    };
+
+                    // Only continue processing if we didn't deliberately abort (e.g., IGNORE intent)
+                    if !should_abort_generation {
+                        // Trigger Profile Update in background
+                        if let BotResponse::Text(ref text_response) = response {
+                             let prompt_clone = request.prompt.clone();
+                             let text_clone = text_response.clone();
+                             let profile_key_clone = request.profile_key.clone();
+                             let source_name_clone = request.source_name.clone();
+                             let pm = profile_manager_seq.clone();
+                             let aic = ai_client_seq.clone();
+
+                             tokio::spawn(async move {
+                                 // 1. Update User Profile
+                                 if let Ok(current_profile) = pm.get_profile(&profile_key_clone, source_name_clone.clone()).await {
+                                     let history_str = format!("User: {}\nBot: {}", prompt_clone, text_clone);
+                                     match aic.analyze_profile_update(&current_profile, &history_str).await {
+                                         Ok(updated_profile) => {
+                                             if let Err(e) = pm.save_profile(&updated_profile).await {
+                                                 error!("Failed to save user profile for {}: {:?}", crate::utils::anonymize(&profile_key_clone), e);
+                                             } else {
+                                                 info!("Updated user profile for {}", crate::utils::anonymize(&profile_key_clone));
+                                             }
+                                         },
+                                         Err(e) => error!("Failed to analyze user profile update: {:?}", e)
+                                     }
+                                 }
+
+                                 // 2. Update Group Profile (if applicable)
+                                 if let Some(gid) = &group_id_spawn_clone {
+                                     if let Ok(current_group) = pm.get_group_profile(gid, None).await {
+                                         // Provide a slightly richer history string for the group context
+                                         let user_display = source_name_clone.unwrap_or_else(|| profile_key_clone.clone());
+                                         let history_str = format!("{} (User): {}\nPiotr (Bot): {}", user_display, prompt_clone, text_clone);
+
+                                         match aic.analyze_group_profile_update(&current_group, &history_str).await {
+                                             Ok(updated_group) => {
+                                                  if let Err(e) = pm.save_group_profile(&updated_group).await {
+                                                      error!("Failed to save group profile for {}: {:?}", gid, e);
+                                                  } else {
+                                                      info!("Updated group profile for {}", gid);
+                                                  }
+                                             },
+                                             Err(e) => error!("Failed to analyze group profile update: {:?}", e)
+                                         }
+                                     }
+                                 }
+                             });
+                        }
+
                         match response {
                             BotResponse::Text(text) => {
                                 // Update History with Model Response

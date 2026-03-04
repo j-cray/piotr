@@ -85,6 +85,17 @@ pub struct UserProfile {
     pub last_updated: u64,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupProfile {
+    pub id: String, // Hashed group ID
+    pub group_name: Option<String>,
+    pub group_vibe: String, // e.g. "chaotic", "serious", "meme-heavy"
+    pub inside_jokes: Vec<String>,
+    pub common_topics: Vec<String>,
+    pub important_memories: Vec<String>,
+    pub last_updated: u64,
+}
+
 #[derive(Clone)]
 pub struct DbProfileManager {
     pool: PgPool,
@@ -188,6 +199,57 @@ impl DbProfileManager {
         sqlx::query(
             "INSERT INTO user_profiles (user_id, encrypted_blob, last_updated) VALUES ($1, $2, $3)
              ON CONFLICT(user_id) DO UPDATE SET encrypted_blob = $2, last_updated = $3"
+        )
+        .bind(&profile.id)
+        .bind(blob)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn get_group_profile(&self, raw_id: &str, current_name: Option<String>) -> Result<GroupProfile> {
+        let id = Self::get_profile_id(raw_id);
+
+        let row: Option<(Vec<u8>,)> = sqlx::query_as("SELECT encrypted_blob FROM group_profiles WHERE group_id = $1")
+            .bind(&id)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        let mut profile = if let Some((blob,)) = row {
+            let plaintext = self.decrypt(&blob)?;
+            serde_json::from_slice(&plaintext)?
+        } else {
+            GroupProfile {
+                id: id.clone(),
+                group_name: current_name.clone(),
+                group_vibe: "Neutral".to_string(),
+                inside_jokes: Vec::new(),
+                common_topics: Vec::new(),
+                important_memories: Vec::new(),
+                last_updated: 0,
+            }
+        };
+
+        if let Some(new_name) = current_name {
+            if profile.group_name.as_ref() != Some(&new_name) {
+                profile.group_name = Some(new_name);
+                self.save_group_profile(&profile).await?;
+            }
+        }
+
+        Ok(profile)
+    }
+
+    pub async fn save_group_profile(&self, profile: &GroupProfile) -> Result<()> {
+        let json = serde_json::to_vec(profile)?;
+        let blob = self.encrypt(&json)?;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+
+        sqlx::query(
+            "INSERT INTO group_profiles (group_id, encrypted_blob, last_updated) VALUES ($1, $2, $3)
+             ON CONFLICT(group_id) DO UPDATE SET encrypted_blob = $2, last_updated = $3"
         )
         .bind(&profile.id)
         .bind(blob)
