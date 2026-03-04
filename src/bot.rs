@@ -139,7 +139,7 @@ impl SessionManager {
                     } else {
                         // Random joke logic is now simple eavesdropping participation
                         let mut rng = rand::rng();
-                        if rng.random_bool(0.01) { // 1% chance to just chime in
+                        if rng.random_bool(0.15) { // 5% chance to just chime in
                             (true, text.clone())
                         } else {
                             (false, String::new())
@@ -577,14 +577,10 @@ impl SessionManager {
                                     }
                                 }
 
-                                // Send Split Messages
-                                let chunks = textwrap::wrap(&text, 240);
-                                for (i, chunk) in chunks.iter().take(4).enumerate() {
-                                    let mut sc = signal_client_seq.lock().await;
-                                    if let Err(e) = sc.send_message(&reply_source, reply_group_id.as_deref(), &chunk, None).await {
-                                        error!("Failed to send Signal response part {}: {:?}", i + 1, e);
-                                    }
-                                    tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+                                // Send Message
+                                let mut sc = signal_client_seq.lock().await;
+                                if let Err(e) = sc.send_message(&reply_source, reply_group_id.as_deref(), &text, None).await {
+                                    error!("Failed to send Signal response: {:?}", e);
                                 }
                             },
                             BotResponse::Image(filename, text) => {
