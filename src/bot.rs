@@ -576,4 +576,77 @@ mod tests {
             panic!("Expected error response");
         }
     }
+
+    // --- SECURITY & STRICT TESTS ---
+
+    #[test]
+    fn test_bot_response_utf8_unexpected() {
+        // Test that our enums can safely hold weird UTF-8 strings
+        // Which could be parsed from adversarial payloads or broken DB pulls
+        let weird_string = String::from_utf8(vec![0xf0, 0x9f, 0x92, 0x96, 0xe2, 0x9d, 0xa4, 0xef, 0xb8, 0x8f]).unwrap(); // Heart emojis
+        let text_resp = BotResponse::Text(weird_string.clone());
+        if let BotResponse::Text(t) = text_resp {
+            assert_eq!(t, weird_string);
+        } else {
+             panic!("Failed");
+        }
+
+        let null_byte_string = "Payload with \x00 null byte".to_string();
+        let err_resp = BotResponse::Error(null_byte_string.clone());
+        if let BotResponse::Error(e) = err_resp {
+            assert_eq!(e, null_byte_string);
+        } else {
+             panic!("Failed");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_model_parsing_variations() {
+        // We can test the parsing logic of handle_model by passing weird command strings
+        // Though handle_model modifies state, we can just ensure it doesn't panic on massive input
+
+        let db_pool = sqlx::postgres::PgPoolOptions::new().connect_lazy("postgres://dummy").unwrap();
+        let profile_manager = DbProfileManager::new(db_pool, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").unwrap();
+        // To build a SessionManager, we need dummy clients
+        // Because of the struct dependencies and `reqwest` inside VertexClient etc,
+        // creating a full SessionManager just to test command parsing is heavy,
+        // but it proves the system doesn't crash on injection.
+        // SignalClient::new returns a Result<(SignalClient, Receiver)>
+        let signal_client = SignalClient::new_dummy();
+        let ai_client = VertexClient::new("dummy");
+
+        let manager = SessionManager::new(signal_client, ai_client, "dummy".to_string(), profile_manager);
+        let ctx = "test_context";
+
+        // 1. Valid commands
+        manager.handle_model(ctx, "source", None, "/model list").await;
+        manager.handle_model(ctx, "source", None, "/model auto").await;
+
+        // 2. Missing arg
+        manager.handle_model(ctx, "source", None, "/model").await;
+
+        // 3. Adversarial / extremely long injection attempt
+        let mut massive_command = String::from("/model ");
+        for _ in 0..5000 {
+            massive_command.push_str("DROP TABLE users; ");
+        }
+
+        // It should just treat the first 5000 words as the "arg" and set preference, or break safely
+        manager.handle_model(ctx, "source", None, &massive_command).await;
+
+        // Verify state is tracking what we expect, no panic
+        let pref = manager.state.get_model_preference(ctx).await;
+        assert!(pref.is_some());
+    }
+
+    #[test]
+    fn test_token_limit_arithmetic_strictly() {
+        let max = 1_000_000_f64;
+        let limit = max * 0.95;
+        assert_eq!(limit as i32, TOKEN_LIMIT);
+
+        // Ensure arithmetic didn't overflow or undercalculate causing safety risks
+        assert!(TOKEN_LIMIT > 900_000);
+        assert!(TOKEN_LIMIT < 1_000_000);
+    }
 }

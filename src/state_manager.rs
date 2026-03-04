@@ -321,4 +321,36 @@ mod tests {
 
         assert_eq!(state.get_history_len(ctx).await, 100);
     }
+
+    #[tokio::test]
+    async fn test_state_manager_clear_history_non_existent() {
+        let state = StateManager::new();
+        let ctx = "non_existent";
+        // Should not panic
+        state.clear_history(ctx).await;
+        assert_eq!(state.get_history_len(ctx).await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_state_manager_get_history_len_empty() {
+        let state = StateManager::new();
+        let ctx = "empty_len";
+        assert_eq!(state.get_history_len(ctx).await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_state_manager_remove_model_preference_non_existent() {
+        let state = StateManager::new();
+        let ctx = "non_existent_pref";
+        // Should not panic
+        state.remove_model_preference(ctx).await;
+        assert_eq!(state.get_model_preference(ctx).await, None);
+    }
+
+    #[tokio::test]
+    async fn test_state_manager_get_sent_message_non_existent() {
+        let state = StateManager::new();
+        // Should return None
+        assert_eq!(state.get_sent_message(999999).await, None);
+    }
 }

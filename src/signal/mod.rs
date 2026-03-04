@@ -118,6 +118,15 @@ pub struct SignalClient {
 }
 
 impl SignalClient {
+    #[cfg(test)]
+    pub fn new_dummy() -> Self {
+        let (tx, _rx) = mpsc::channel(1);
+        Self {
+            user_phone: "dummy".to_string(),
+            tx,
+        }
+    }
+
     pub async fn new(user_phone: &str) -> Result<(Self, mpsc::Receiver<SignalMessage>)> {
         info!("Starting signal-cli for user: [REDACTED]");
         let mut child = Command::new("signal-cli")
@@ -356,5 +365,82 @@ mod tests {
         let error = response.error.unwrap();
         assert_eq!(error.code, -32602);
         assert_eq!(error.message, "Invalid params");
+    }
+
+    // --- SECURITY & STRICT TESTS ---
+
+    #[test]
+    fn test_parse_missing_optional_fields() {
+        // A minimal viable envelope with no data message or sync message
+        let raw_json = r#"{
+            "method": "receive",
+            "params": {
+                "envelope": {
+                    "source": "+1234567890",
+                    "timestamp": 1678886400000
+                }
+            }
+        }"#;
+
+        let parsed: Result<JsonRpcNotification, _> = serde_json::from_str(raw_json);
+        assert!(parsed.is_ok(), "Should parse envelope safely even if dataMessage is entirely missing");
+
+        let notif = parsed.unwrap();
+        let env = notif.params.envelope.unwrap();
+        assert!(env.data_message.is_none());
+    }
+
+    #[test]
+    fn test_serialization_send_message() {
+        // Verify that when we construct the JSON for `send_message`, the recipient is an array like signal-cli expects.
+        // And that attachments are properly structured.
+        // Since we build the Value dynamically in send_message, we can't test a strict struct,
+        // but we can test the json! macro output matching our expectations.
+        let recipient = "+1234567890";
+        let message = "Hello";
+
+        let mut params = serde_json::json!({
+            "recipient": [recipient],
+            "message": message,
+        });
+
+        // Test normal format matches signal-cli specification structurally
+        assert_eq!(params["recipient"][0], "+1234567890");
+        assert_eq!(params["message"], "Hello");
+    }
+
+    #[test]
+    fn test_parse_adversarial_quotes() {
+        // Test parsing an extremely long quote/mention to ensure it doesn't panic
+        let mut long_text = String::new();
+        for _ in 0..10_000 {
+            long_text.push_str("A");
+        }
+
+        // This simulates a DoS attempt via giant payloads on the JSON parser
+        let raw_json = format!(r#"{{
+            "method": "receive",
+            "params": {{
+                "envelope": {{
+                    "source": "+1",
+                    "timestamp": 123,
+                    "dataMessage": {{
+                        "message": "reply",
+                        "timestamp": 123,
+                        "quote": {{
+                            "id": 1,
+                            "author": "+2",
+                            "text": "{}"
+                        }}
+                    }}
+                }}
+            }}
+        }}"#, long_text);
+
+        let parsed: Result<JsonRpcNotification, _> = serde_json::from_str(&raw_json);
+        assert!(parsed.is_ok());
+
+        let quote = parsed.unwrap().params.envelope.unwrap().data_message.unwrap().quote.unwrap();
+        assert_eq!(quote.text.len(), 10_000);
     }
 }

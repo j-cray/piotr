@@ -354,4 +354,69 @@ mod tests {
         assert_eq!(sorted[1].prompt, "1"); // 0.1
         assert_eq!(sorted[2].prompt, "3"); // -0.5
     }
+
+    // --- SECURITY TESTS ---
+
+    fn get_test_manager() -> DbProfileManager {
+        // Mock pool isn't needed for encryption isolated testing, but struct requires it.
+        // We can test encrypt/decrypt methods directly if we instantiate with dummy key.
+        DbProfileManager {
+            pool: sqlx::postgres::PgPoolOptions::new().connect_lazy("postgres://dummy").unwrap(),
+            encryption_key: [1u8; 32],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_encryption_entropy() {
+        let manager = get_test_manager();
+        let data = b"Sensitive User Data";
+
+        let run1 = manager.encrypt(data).unwrap();
+        let run2 = manager.encrypt(data).unwrap();
+
+        // Security: Nonce should ensure identical plaintext produces different ciphertext
+        assert_ne!(run1, run2, "Encryption lacks entropy; same plaintext produced same ciphertext");
+
+        // Decryption should still succeed for both
+        assert_eq!(manager.decrypt(&run1).unwrap(), data);
+        assert_eq!(manager.decrypt(&run2).unwrap(), data);
+    }
+
+    #[tokio::test]
+    async fn test_decryption_too_short() {
+        let manager = get_test_manager();
+        let short_blob = vec![1u8; 23];
+        let result = manager.decrypt(&short_blob);
+        assert!(result.is_err(), "Decryption should fail on blobs smaller than nonce size");
+    }
+
+    #[tokio::test]
+    async fn test_decryption_tampering() {
+        let manager = get_test_manager();
+        let data = b"Valid Payload";
+        let mut encrypted = manager.encrypt(data).unwrap();
+
+        // Tamper with the ciphertext
+        encrypted[25] ^= 0x01;
+
+        let result = manager.decrypt(&encrypted);
+        assert!(result.is_err(), "Decryption should mathematically fail on tampered ciphertext");
+    }
+
+    #[tokio::test]
+    async fn test_profile_id_empty_and_special() {
+        let empty_hash = DbProfileManager::get_profile_id("");
+        assert_eq!(empty_hash.len(), 64);
+
+        let special_chars = "👉👈🥺 \n\r\t \x00 null byte included";
+        let special_hash = DbProfileManager::get_profile_id(special_chars);
+        assert_eq!(special_hash.len(), 64);
+    }
+
+    #[tokio::test]
+    async fn test_memory_invalid_file_graceful_handling() {
+        let mem = Memory::new("/tmp/this_file_definitely_does_not_exist_123.json");
+        let examples = mem.get_relevant_examples("", 10).await;
+        assert_eq!(examples.len(), 0);
+    }
 }

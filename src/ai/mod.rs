@@ -845,4 +845,85 @@ mod tests {
         assert_eq!(content.role, "model");
         assert_eq!(content.parts[0].text.as_deref(), Some("Hello there!"));
     }
+
+    // --- SECURITY & STRICT TESTS ---
+
+    #[test]
+    fn test_malformed_json_deserialization() {
+        let raw_json_missing_fields = r#"{
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"text": "Missing role"}]
+                    }
+                }
+            ]
+        }"#;
+
+        // Missing role should fail according to our strict struct definitions usually,
+        // but let's see if serde handles it based on Option/Defaults.
+        // Actually, role in Content is String, not Option<String>, so it MUST fail.
+        let parsed: Result<GenerateContentResponse, _> = serde_json::from_str(raw_json_missing_fields);
+        assert!(parsed.is_err(), "Deserialization should fail when required fields are missing");
+
+        let raw_garbage = r#"This is not JSON at all"#;
+        let parsed2: Result<GenerateContentResponse, _> = serde_json::from_str(raw_garbage);
+        assert!(parsed2.is_err(), "Should fail on complete garbage");
+    }
+
+    #[test]
+    fn test_content_and_part_serialization() {
+        // Security: Ensure our JSON construction for Vertex exactly matches expected structure
+        // preventing injection via malformed fields.
+        let content = Content {
+            role: "user".to_string(),
+            parts: vec![Part { text: Some("Normal text\nwith \"quotes\" and \\slashes".to_string()) }],
+        };
+
+        let serialized = serde_json::to_string(&content).unwrap();
+        // It should properly escape the quotes and slashes, keeping JSON valid
+        let deserialized: Content = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(deserialized.role, "user");
+        assert_eq!(deserialized.parts[0].text.as_deref(), Some("Normal text\nwith \"quotes\" and \\slashes"));
+    }
+
+    #[tokio::test]
+    async fn test_generate_content_adversarial_input() {
+        // We aren't testing live Vertex here, but we are testing that if
+        // Vertex returns adversarial JSON strings inside the text part, we parse them safely
+        // when expecting a Profile or similar.
+
+        let adversarial_text = r#"{"id": "fake", "name": "Fake Name", "personality_summary": "} Malicious Payload {", "interaction_style": "evil", "topics_of_interest": [], "last_updated": 0}"#;
+
+        // This is valid JSON, so it should parse securely into UserProfile.
+        let parsed = serde_json::from_str::<crate::ai::memory::UserProfile>(adversarial_text);
+        assert!(parsed.is_ok());
+        let prof = parsed.unwrap();
+        assert_eq!(prof.personality_summary, "} Malicious Payload {");
+        // We proved that the JSON parser safely contains the structural characters inside the text field
+    }
+
+    #[test]
+    fn test_classification_instruction_parsing_edge_cases() {
+        // Intent classification expects a single word mostly. Let's ensure if it returns weirdness, we don't panic.
+        // The parsing logic just grabs the text. We test the struct decoding logic.
+        let edge_case_json = r#"{
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [{"text": "  FLASH \n\n"}]
+                    }
+                }
+            ]
+        }"#;
+        let parsed: GenerateContentResponse = serde_json::from_str(edge_case_json).unwrap();
+        let candidates = parsed.candidates.unwrap();
+        let text = candidates[0].content.as_ref().unwrap().parts[0].text.as_deref().unwrap();
+
+        // The consuming code does `.trim().to_uppercase()`.
+        let final_intent = text.trim().to_uppercase();
+        assert_eq!(final_intent, "FLASH");
+    }
 }
