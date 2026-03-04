@@ -548,3 +548,32 @@ impl SessionManager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bot_constants() {
+        assert!(TOKEN_LIMIT < MODEL_MAX_TOKENS);
+        assert_eq!(MODEL_MAX_TOKENS, 1_000_000);
+        assert_eq!(TOKEN_LIMIT, 950_000);
+    }
+
+    #[test]
+    fn test_bot_response_formatting() {
+        let text_response = BotResponse::Text("Hello world".to_string());
+        if let BotResponse::Text(t) = text_response {
+            assert_eq!(t, "Hello world");
+        } else {
+            panic!("Expected text response");
+        }
+
+        let error_response = BotResponse::Error("Failed".to_string());
+        if let BotResponse::Error(e) = error_response {
+            assert_eq!(e, "Failed");
+        } else {
+            panic!("Expected error response");
+        }
+    }
+}

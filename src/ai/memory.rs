@@ -290,3 +290,68 @@ impl DbProfileManager {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_profile_id_generation() {
+        let raw_id = "+1234567890";
+        let hashed_id = DbProfileManager::get_profile_id(raw_id);
+
+        // Output should be a 64 character hex string (sha256)
+        assert_eq!(hashed_id.len(), 64);
+
+        // Same input should produce same output
+        let hashed_id_2 = DbProfileManager::get_profile_id(raw_id);
+        assert_eq!(hashed_id, hashed_id_2);
+
+        // Different input should produce different output
+        let different = DbProfileManager::get_profile_id("+0987654321");
+        assert_ne!(hashed_id, different);
+    }
+
+    #[test]
+    fn test_memory_interaction_sorting() {
+        let i1 = Interaction {
+            prompt: "1".to_string(),
+            response: "1".to_string(),
+            analysis: ReactionAnalysis {
+                sentiment_score: 0.1,
+                reasoning: "".to_string(),
+                tags: vec![],
+            },
+            timestamp: 1,
+        };
+        let i2 = Interaction {
+            prompt: "2".to_string(),
+            response: "2".to_string(),
+            analysis: ReactionAnalysis {
+                sentiment_score: 0.9,
+                reasoning: "".to_string(),
+                tags: vec![],
+            },
+            timestamp: 2,
+        };
+        let i3 = Interaction {
+            prompt: "3".to_string(),
+            response: "3".to_string(),
+            analysis: ReactionAnalysis {
+                sentiment_score: -0.5,
+                reasoning: "".to_string(),
+                tags: vec![],
+            },
+            timestamp: 3,
+        };
+
+        let interactions = vec![i1, i2, i3];
+        let mut sorted = interactions.clone();
+
+        sorted.sort_by(|a, b| b.analysis.sentiment_score.partial_cmp(&a.analysis.sentiment_score).unwrap_or(std::cmp::Ordering::Equal));
+
+        assert_eq!(sorted[0].prompt, "2"); // 0.9
+        assert_eq!(sorted[1].prompt, "1"); // 0.1
+        assert_eq!(sorted[2].prompt, "3"); // -0.5
+    }
+}

@@ -278,3 +278,83 @@ impl SignalClient {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_json_rpc_notification() {
+        let raw_json = r#"{
+            "method": "receive",
+            "params": {
+                "envelope": {
+                    "source": "+1234567890",
+                    "timestamp": 1678886400000,
+                    "dataMessage": {
+                        "message": "Hello from signal",
+                        "timestamp": 1678886400000
+                    }
+                }
+            }
+        }"#;
+
+        let parsed: Result<JsonRpcNotification, _> = serde_json::from_str(raw_json);
+        assert!(parsed.is_ok());
+
+        let notif = parsed.unwrap();
+        assert_eq!(notif.method, "receive");
+        assert!(notif.params.envelope.is_some());
+
+        let envelope = notif.params.envelope.unwrap();
+        assert_eq!(envelope.source, "+1234567890");
+        assert_eq!(envelope.timestamp, 1678886400000);
+
+        assert!(envelope.data_message.is_some());
+        let data_message = envelope.data_message.unwrap();
+        assert_eq!(data_message.message.as_deref(), Some("Hello from signal"));
+    }
+
+    #[test]
+    fn test_parse_json_rpc_response_success() {
+        let raw_json = r#"{
+            "jsonrpc": "2.0",
+            "id": "1",
+            "result": {
+                "timestamp": 1678886400000
+            }
+        }"#;
+
+        let parsed: Result<JsonRpcResponse, _> = serde_json::from_str(raw_json);
+        assert!(parsed.is_ok());
+
+        let response = parsed.unwrap();
+        assert_eq!(response.id.as_deref(), Some("1"));
+        assert!(response.result.is_some());
+        assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn test_parse_json_rpc_response_error() {
+        let raw_json = r#"{
+            "jsonrpc": "2.0",
+            "id": "2",
+            "error": {
+                "code": -32602,
+                "message": "Invalid params"
+            }
+        }"#;
+
+        let parsed: Result<JsonRpcResponse, _> = serde_json::from_str(raw_json);
+        assert!(parsed.is_ok());
+
+        let response = parsed.unwrap();
+        assert_eq!(response.id.as_deref(), Some("2"));
+        assert!(response.result.is_none());
+        assert!(response.error.is_some());
+
+        let error = response.error.unwrap();
+        assert_eq!(error.code, -32602);
+        assert_eq!(error.message, "Invalid params");
+    }
+}

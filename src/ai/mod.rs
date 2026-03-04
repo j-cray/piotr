@@ -739,56 +739,110 @@ Structure:
 
 #[cfg(test)]
 mod tests {
-        use super::*;
+    use super::*;
 
-        #[tokio::test]
-        async fn test_count_tokens_live() {
-            // Only run if we can (this is an integration test)
-            // It expects gcloud to be authenticated
-            let project_id = std::env::var("GCP_PROJECT_ID").unwrap_or_else(|_| "piotr-487123".to_string());
-            let client = VertexClient::new(&project_id);
-
-            let contents = vec![Content {
-                role: "user".to_string(),
-                parts: vec![Part { text: Some("Hello world".to_string()) }]
-            }];
-
-            match client.count_tokens(contents, "gemini-3-flash-preview").await {
-                Ok(count) => {
-                    println!("Token count: {}", count);
-                    assert!(count > 0);
-                },
-                Err(e) => {
-                     // If it fails due to auth, we might want to skip or fail.
-                     // For manual verification, failure is good to know.
-                     panic!("Count tokens failed: {:?}", e);
-                }
-            }
+    #[tokio::test]
+    async fn test_count_tokens_live() {
+        // Only run if we can (this is an integration test)
+        // It expects gcloud to be authenticated
+        if std::env::var("GCP_PROJECT_ID").is_err() {
+            return;
         }
+        let project_id = std::env::var("GCP_PROJECT_ID").unwrap();
+        let client = VertexClient::new(&project_id);
 
-        #[tokio::test]
-        async fn test_classify_intent_mentions() {
-            let project_id = std::env::var("GCP_PROJECT_ID").unwrap_or_else(|_| "piotr-487123".to_string());
-            let client = VertexClient::new(&project_id);
+        let contents = vec![Content {
+            role: "user".to_string(),
+            parts: vec![Part { text: Some("Hello world".to_string()) }]
+        }];
 
-            // Test 1: Direct invocation
-            let prompt_direct = "SYSTEM: Analyze if the user is talking *to* you or just talking *about* you. Reply IGNORE if they are mentioning you in passing to someone else without expecting a response. If they are addressing you directly (e.g. just '@Piotr' or asking a question), categorize the intent normally as FLASH, SEARCH, PRO, or IMAGE. User prompt: @Piotr";
-            match client.classify_intent(prompt_direct).await {
-                Ok(intent) => {
-                    println!("Direct invocation intent: {}", intent);
-                    assert_ne!(intent, "IGNORE");
-                },
-                Err(e) => panic!("Classification failed: {:?}", e),
-            }
-
-            // Test 2: Passing mention
-            let prompt_passing = "SYSTEM: Analyze if the user is talking *to* you or just talking *about* you. Reply IGNORE if they are mentioning you in passing to someone else without expecting a response. If they are addressing you directly (e.g. just '@Piotr' or asking a question), categorize the intent normally as FLASH, SEARCH, PRO, or IMAGE. User prompt: I think @Piotr is broken";
-            match client.classify_intent(prompt_passing).await {
-                Ok(intent) => {
-                    println!("Passing mention intent: {}", intent);
-                    assert_eq!(intent, "IGNORE");
-                },
-                Err(e) => panic!("Classification failed: {:?}", e),
+        match client.count_tokens(contents, "gemini-3-flash-preview").await {
+            Ok(count) => {
+                println!("Token count: {}", count);
+                assert!(count > 0);
+            },
+            Err(e) => {
+                 panic!("Count tokens failed: {:?}", e);
             }
         }
     }
+
+    #[tokio::test]
+    async fn test_classify_intent_mentions() {
+        if std::env::var("GCP_PROJECT_ID").is_err() {
+            return;
+        }
+        let project_id = std::env::var("GCP_PROJECT_ID").unwrap();
+        let client = VertexClient::new(&project_id);
+
+        // Test 1: Direct invocation
+        let prompt_direct = "SYSTEM: Analyze if the user is talking *to* you or just talking *about* you. Reply IGNORE if they are mentioning you in passing to someone else without expecting a response. If they are addressing you directly (e.g. just '@Piotr' or asking a question), categorize the intent normally as FLASH, SEARCH, PRO, or IMAGE. User prompt: @Piotr";
+        match client.classify_intent(prompt_direct).await {
+            Ok(intent) => {
+                println!("Direct invocation intent: {}", intent);
+                assert_ne!(intent, "IGNORE");
+            },
+            Err(e) => panic!("Classification failed: {:?}", e),
+        }
+
+        // Test 2: Passing mention
+        let prompt_passing = "SYSTEM: Analyze if the user is talking *to* you or just talking *about* you. Reply IGNORE if they are mentioning you in passing to someone else without expecting a response. If they are addressing you directly (e.g. just '@Piotr' or asking a question), categorize the intent normally as FLASH, SEARCH, PRO, or IMAGE. User prompt: I think @Piotr is broken";
+        match client.classify_intent(prompt_passing).await {
+            Ok(intent) => {
+                println!("Passing mention intent: {}", intent);
+                assert_eq!(intent, "IGNORE");
+            },
+            Err(e) => panic!("Classification failed: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_reaction_analysis_parsing() {
+        let raw_json = r#"{
+            "sentiment_score": -0.8,
+            "reasoning": "User is distressed.",
+            "tags": ["distress", "sarcasm_failure"]
+        }"#;
+
+        let parsed: Result<ReactionAnalysis, _> = serde_json::from_str(raw_json);
+        assert!(parsed.is_ok());
+        let analysis = parsed.unwrap();
+        assert_eq!(analysis.sentiment_score, -0.8);
+        assert_eq!(analysis.tags.len(), 2);
+    }
+
+    #[test]
+    fn test_generate_content_response_parsing() {
+        let raw_json = r#"{
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [{"text": "Hello there!"}]
+                    },
+                    "finishReason": "STOP",
+                    "safetyRatings": []
+                }
+            ],
+            "promptFeedback": {
+                "safetyRatings": []
+            }
+        }"#;
+
+        let parsed: Result<GenerateContentResponse, _> = serde_json::from_str(raw_json);
+        assert!(parsed.is_ok());
+
+        let response = parsed.unwrap();
+        assert!(response.candidates.is_some());
+
+        let candidates = response.candidates.unwrap();
+        assert_eq!(candidates.len(), 1);
+
+        let first_candidate = &candidates[0];
+        assert_eq!(first_candidate.finish_reason.as_deref(), Some("STOP"));
+
+        let content = first_candidate.content.as_ref().unwrap();
+        assert_eq!(content.role, "model");
+        assert_eq!(content.parts[0].text.as_deref(), Some("Hello there!"));
+    }
+}

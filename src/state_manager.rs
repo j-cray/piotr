@@ -235,4 +235,90 @@ mod tests {
 
         assert!(state.get_sequencer_tx(ctx).await.is_some());
     }
+
+    #[tokio::test]
+    async fn test_state_manager_get_last_user_prompt_edge_cases() {
+        let state = StateManager::new();
+        let ctx = "edge_cases";
+
+        // Empty history
+        assert_eq!(state.get_last_user_prompt(ctx).await, None);
+
+        // Only model messages
+        let model_msg = Content {
+            role: "model".to_string(),
+            parts: vec![Part { text: Some("Model text".to_string()) }],
+        };
+        state.add_model_message(ctx, model_msg).await;
+        assert_eq!(state.get_last_user_prompt(ctx).await, None);
+
+        // Multiple user messages, ensure we get the LAST one
+        let user_msg1 = Content {
+            role: "user".to_string(),
+            parts: vec![Part { text: Some("First".to_string()) }],
+        };
+        let user_msg2 = Content {
+            role: "user".to_string(),
+            parts: vec![Part { text: Some("Second".to_string()) }],
+        };
+        state.add_user_message(ctx, user_msg1).await;
+        state.add_user_message(ctx, user_msg2).await;
+
+        let last_prompt = state.get_last_user_prompt(ctx).await;
+        assert_eq!(last_prompt.unwrap(), "Second");
+    }
+
+    #[tokio::test]
+    async fn test_state_manager_prune_edge_cases() {
+        let state = StateManager::new();
+        let ctx = "prune_edge";
+
+        // Pruning empty history shouldn't panic
+        state.prune_history(ctx, 5).await;
+        assert_eq!(state.get_history_len(ctx).await, 0);
+
+        let msg = Content {
+            role: "user".to_string(),
+            parts: vec![Part { text: Some("msg".to_string()) }],
+        };
+        state.add_user_message(ctx, msg).await;
+
+        // Pruning more than existing
+        state.prune_history(ctx, 10).await;
+        assert_eq!(state.get_history_len(ctx).await, 0);
+
+        // Pruning exactly 0
+        let msg2 = Content {
+            role: "user".to_string(),
+            parts: vec![Part { text: Some("msg2".to_string()) }],
+        };
+        state.add_user_message(ctx, msg2).await;
+        state.prune_history(ctx, 0).await;
+        assert_eq!(state.get_history_len(ctx).await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_state_manager_concurrency() {
+        // Test that StateManager handles concurrent updates correctly
+        let state = Arc::new(StateManager::new());
+        let ctx = "concurrent";
+        let mut handles = vec![];
+
+        for i in 0..100 {
+            let state_clone = Arc::clone(&state);
+            handles.push(tokio::spawn(async move {
+                let msg = Content {
+                    role: "user".to_string(),
+                    parts: vec![Part { text: Some(format!("msg_{}", i)) }],
+                };
+                state_clone.add_user_message(ctx, msg).await;
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        assert_eq!(state.get_history_len(ctx).await, 100);
+    }
 }
