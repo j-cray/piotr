@@ -69,6 +69,17 @@ pub struct DataMessage {
     pub group_info: Option<GroupInfo>,
     pub quote: Option<Quote>,
     pub reaction: Option<Reaction>,
+    pub mentions: Option<Vec<Mention>>,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(dead_code)]
+pub struct Mention {
+    pub name: Option<String>,
+    pub number: Option<String>,
+    pub uuid: Option<String>,
+    pub start: usize,
+    pub length: usize,
 }
 
 #[derive(Deserialize, Debug)]

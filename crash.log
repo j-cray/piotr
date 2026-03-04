@@ -1,0 +1,68 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running `target/debug/piotr`
+[2026-03-04T03:34:22Z INFO  piotr] Starting Signal Bot...
+Error: pool timed out while waiting for an open connection
+
+Stack backtrace:
+   0: anyhow::error::<impl core::convert::From<E> for anyhow::Error>::from
+             at /home/icarus/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anyhow-1.0.101/src/backtrace.rs:27:14
+   1: <core::result::Result<T,F> as core::ops::try_trait::FromResidual<core::result::Result<core::convert::Infallible,E>>>::from_residual
+             at /nix/store/3hqji04051zpxcqij221az5ywlsrfydc-rust-default-1.93.0/lib/rustlib/src/rust/library/core/src/result.rs:2189:27
+   2: piotr::db::Database::new::{{closure}}
+             at ./src/db.rs:11:20
+   3: piotr::main::{{closure}}
+             at ./src/main.rs:21:47
+   4: <core::pin::Pin<P> as core::future::future::Future>::poll
+             at /nix/store/3hqji04051zpxcqij221az5ywlsrfydc-rust-default-1.93.0/lib/rustlib/src/rust/library/core/src/future/future.rs:133:9
+   5: tokio::runtime::park::CachedParkThread::block_on::{{closure}}
+             at /home/icarus/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.49.0/src/runtime/park.rs:284:71
+   6: tokio::task::coop::with_budget
+             at /home/icarus/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.49.0/src/task/coop/mod.rs:167:5
+   7: tokio::task::coop::budget
+             at /home/icarus/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.49.0/src/task/coop/mod.rs:133:5
+   8: tokio::runtime::park::CachedParkThread::block_on
+             at /home/icarus/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.49.0/src/runtime/park.rs:284:31
+   9: tokio::runtime::context::blocking::BlockingRegionGuard::block_on
+             at /home/icarus/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.49.0/src/runtime/context/blocking.rs:66:14
+  10: tokio::runtime::scheduler::multi_thread::MultiThread::block_on::{{closure}}
+             at /home/icarus/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.49.0/src/runtime/scheduler/multi_thread/mod.rs:89:22
+  11: tokio::runtime::context::runtime::enter_runtime
+             at /home/icarus/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.49.0/src/runtime/context/runtime.rs:65:16
+  12: tokio::runtime::scheduler::multi_thread::MultiThread::block_on
+             at /home/icarus/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.49.0/src/runtime/scheduler/multi_thread/mod.rs:88:9
+  13: tokio::runtime::runtime::Runtime::block_on_inner
+             at /home/icarus/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.49.0/src/runtime/runtime.rs:370:50
+  14: tokio::runtime::runtime::Runtime::block_on
+             at /home/icarus/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.49.0/src/runtime/runtime.rs:340:18
+  15: piotr::main
+             at ./src/main.rs:80:7
+  16: core::ops::function::FnOnce::call_once
+             at /nix/store/3hqji04051zpxcqij221az5ywlsrfydc-rust-default-1.93.0/lib/rustlib/src/rust/library/core/src/ops/function.rs:250:5
+  17: std::sys::backtrace::__rust_begin_short_backtrace
+             at /nix/store/3hqji04051zpxcqij221az5ywlsrfydc-rust-default-1.93.0/lib/rustlib/src/rust/library/std/src/sys/backtrace.rs:160:18
+  18: std::rt::lang_start::{{closure}}
+             at /nix/store/3hqji04051zpxcqij221az5ywlsrfydc-rust-default-1.93.0/lib/rustlib/src/rust/library/std/src/rt.rs:206:18
+  19: core::ops::function::impls::<impl core::ops::function::FnOnce<A> for &F>::call_once
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/core/src/ops/function.rs:287:21
+  20: std::panicking::catch_unwind::do_call
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panicking.rs:581:40
+  21: std::panicking::catch_unwind
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panicking.rs:544:19
+  22: std::panic::catch_unwind
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panic.rs:359:14
+  23: std::rt::lang_start_internal::{{closure}}
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/rt.rs:175:24
+  24: std::panicking::catch_unwind::do_call
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panicking.rs:581:40
+  25: std::panicking::catch_unwind
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panicking.rs:544:19
+  26: std::panic::catch_unwind
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/panic.rs:359:14
+  27: std::rt::lang_start_internal
+             at /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/std/src/rt.rs:171:5
+  28: std::rt::lang_start
+             at /nix/store/3hqji04051zpxcqij221az5ywlsrfydc-rust-default-1.93.0/lib/rustlib/src/rust/library/std/src/rt.rs:205:5
+  29: main
+  30: __libc_start_call_main
+  31: __libc_start_main_alias_2
+  32: _start

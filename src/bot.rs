@@ -67,6 +67,7 @@ impl SessionManager {
         let timestamp = envelope.timestamp;
 
         if let Some(data) = envelope.data_message {
+            info!("Data Message: {:?}", data);
             if let Some(text) = data.message {
                 let is_group = data.group_info.is_some();
                 let group_id = data.group_info.as_ref().map(|g| g.group_id.clone());
@@ -120,7 +121,17 @@ impl SessionManager {
                 };
 
                 // Explicit triggers
-                let is_mentioned = text_lower.contains("@piotr") || text_lower.contains("piotr");
+                let mut is_mentioned = text_lower.contains("@piotr") || text_lower.contains("piotr");
+
+                // Also check native Signal mentions
+                if let Some(mentions) = &data.mentions {
+                    for m in mentions {
+                        if m.number.as_deref() == Some(&self.bot_number) || m.name.as_deref().unwrap_or("").to_lowercase().contains("piotr") {
+                            is_mentioned = true;
+                            break;
+                        }
+                    }
+                }
 
                 let (should_reply, prompt) = if is_group {
                     if is_quote_reply || is_mentioned {
@@ -442,7 +453,7 @@ impl SessionManager {
                     // Pre-Processing (Intent & Mention Differentiation)
                     // Differentiate a passing mention from a direct address
                     let prompt_lower = request.prompt.to_lowercase();
-                    let is_mentioned = prompt_lower.contains("piotr") || prompt_lower.contains("@piotr");
+                    let is_mentioned = prompt_lower.contains("piotr") || prompt_lower.contains("@piotr") || prompt_lower.contains("￼");
                     let mut should_abort_generation = false;
 
                     let model_override = {
@@ -458,7 +469,7 @@ impl SessionManager {
                         let mut prompt_to_test = request.prompt.clone();
                         if is_mentioned {
                             // Let the LLM also decide if this string is talking ABOUT piotr or TO piotr (this helps save tokens/spams if we catch early)
-                            prompt_to_test = format!("SYSTEM: Is the user talking *to* you or just talking *about* you? Reply IGNORE if they are just mentioning you without expecting a response. Otherwise, respond normally to: {}", request.prompt);
+                            prompt_to_test = format!("SYSTEM: Analyze if the user is talking *to* you or just talking *about* you. Reply IGNORE if they are mentioning you in passing to someone else without expecting a response. If they are addressing you directly (e.g. just '@Piotr' or asking a question), categorize the intent normally as FLASH, SEARCH, PRO, or IMAGE. User prompt: {}", request.prompt);
                         }
 
                         let intent = match ai_client_seq.classify_intent(&prompt_to_test).await {

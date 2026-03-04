@@ -47,6 +47,7 @@ Piotr: "It is currently sunny out." (Too robotic).
 "#;
 
 const CLASSIFICATION_INSTRUCTION: &str = r#"You are a classification router. Analyze the user's request and categorize it into one of these exact keywords:
+- IGNORE: If the user is mentioning you but clearly talking to someone else in the group chat and not expecting you to reply, or if the SYSTEM prompt instructs you to output IGNORE.
 - IMAGE_4: If request asks for 'high quality', 'ultra realistic', '4k', or 'detailed' image/drawing/photo.
 - IMAGE_3: If request asks to 'draw', 'generate', 'create', 'sketch', or 'paint' an image/picture/photo/art/robot, OR specifically says 'generate an image'.
 - PRO: If request involves complex reasoning, coding, math, or analysis.
@@ -62,6 +63,7 @@ Input: 'find info on mars' -> Output: SEARCH
 Input: 'search the web for olympics' -> Output: SEARCH
 Input: 'hello' -> Output: FLASH
 Input: 'code a snake game' -> Output: PRO
+Input: 'I think @Piotr is broken' -> Output: IGNORE
 
 Output ONLY the single keyword."#;
 
@@ -761,6 +763,32 @@ mod tests {
                      // For manual verification, failure is good to know.
                      panic!("Count tokens failed: {:?}", e);
                 }
+            }
+        }
+
+        #[tokio::test]
+        async fn test_classify_intent_mentions() {
+            let project_id = std::env::var("GCP_PROJECT_ID").unwrap_or_else(|_| "piotr-487123".to_string());
+            let client = VertexClient::new(&project_id);
+
+            // Test 1: Direct invocation
+            let prompt_direct = "SYSTEM: Analyze if the user is talking *to* you or just talking *about* you. Reply IGNORE if they are mentioning you in passing to someone else without expecting a response. If they are addressing you directly (e.g. just '@Piotr' or asking a question), categorize the intent normally as FLASH, SEARCH, PRO, or IMAGE. User prompt: @Piotr";
+            match client.classify_intent(prompt_direct).await {
+                Ok(intent) => {
+                    println!("Direct invocation intent: {}", intent);
+                    assert_ne!(intent, "IGNORE");
+                },
+                Err(e) => panic!("Classification failed: {:?}", e),
+            }
+
+            // Test 2: Passing mention
+            let prompt_passing = "SYSTEM: Analyze if the user is talking *to* you or just talking *about* you. Reply IGNORE if they are mentioning you in passing to someone else without expecting a response. If they are addressing you directly (e.g. just '@Piotr' or asking a question), categorize the intent normally as FLASH, SEARCH, PRO, or IMAGE. User prompt: I think @Piotr is broken";
+            match client.classify_intent(prompt_passing).await {
+                Ok(intent) => {
+                    println!("Passing mention intent: {}", intent);
+                    assert_eq!(intent, "IGNORE");
+                },
+                Err(e) => panic!("Classification failed: {:?}", e),
             }
         }
     }
