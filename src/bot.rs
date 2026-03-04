@@ -138,7 +138,8 @@ impl SessionManager {
                     }
 
                     info!("Processing prompt from {}", crate::utils::anonymize(&source));
-                    self.process_ai_request(source, group_id, context_key, final_prompt, timestamp, profile_key, source_name).await;
+                    let reply_address = envelope.source_uuid.clone().unwrap_or_else(|| source.clone());
+                    self.process_ai_request(reply_address, group_id, context_key, final_prompt, timestamp, profile_key, source_name).await;
                 } else {
                     info!("Ignoring message from {} (No trigger)", crate::utils::anonymize(&source));
                 }
@@ -223,7 +224,7 @@ impl SessionManager {
         let _ = self.signal_client.send_message(reply_source, reply_group_id, &response, None).await;
     }
 
-    async fn process_ai_request(&self, source: String, group_id: Option<String>, context_key: String, prompt: String, timestamp: u64, profile_key: String, source_name: Option<String>) {
+    async fn process_ai_request(&self, reply_address: String, group_id: Option<String>, context_key: String, prompt: String, timestamp: u64, profile_key: String, source_name: Option<String>) {
         // Get or Create Sequencer
         let sequencer_tx = self.get_sequencer_tx(context_key.clone(), group_id.clone()).await;
 
@@ -235,7 +236,7 @@ impl SessionManager {
         };
 
         // Send Ticket to Sequencer (Preserves Contextual Order)
-        let dest_info = (source.clone(), group_id.clone());
+        let dest_info = (reply_address, group_id);
         if let Err(e) = sequencer_tx.send((dest_info, request)) {
             error!("Failed to send request to sequencer: {}", e);
         }
