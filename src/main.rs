@@ -3,11 +3,10 @@ mod ai;
 mod bot;
 mod db;
 mod utils;
+mod state_manager;
 
 use dotenv::dotenv;
 use log::info;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -41,25 +40,20 @@ async fn main() -> anyhow::Result<()> {
     let accounts: serde_json::Value = serde_json::from_str(&accounts_json).expect("Invalid accounts.json format");
     let signal_phone = accounts["accounts"][0]["number"].as_str().expect("Could not find number in accounts.json").to_string();
 
-    let mut signal_client_raw = match signal::SignalClient::new(&signal_phone).await {
-        Ok(client) => client,
+    let (signal_client, mut rx) = match signal::SignalClient::new(&signal_phone).await {
+        Ok(res) => res,
         Err(e) => {
             log::error!("Failed to start SignalClient: {:?}", e);
             return Err(e);
         }
     };
 
-    let mut rx = signal_client_raw.run_listener().await?;
-
-    // Wrap in Arc<Mutex> for sharing with SessionManager
-    let signal_client = Arc::new(Mutex::new(signal_client_raw));
-
     info!("Signal listener started. Waiting for messages...");
 
     // Initialize Session Manager
     // Reuse the phone number we got earlier for the signal client
     let bot_number = signal_phone.clone();
-    let session_manager = bot::SessionManager::new(signal_client.clone(), ai_client, bot_number, profile_manager);
+    let session_manager = bot::SessionManager::new(signal_client, ai_client, bot_number, profile_manager);
 
     // Event Loop
     while let Some(msg) = rx.recv().await {

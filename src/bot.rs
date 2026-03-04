@@ -1,28 +1,12 @@
-use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use log::{info, error, warn};
 use rand::RngExt; // For random_bool
 
 use crate::ai::{VertexClient, Content, Part, memory::{Memory, DbProfileManager}};
+use crate::state_manager::{StateManager, DestinationInfo, ContextRequest};
 use crate::signal::{SignalClient, Envelope};
 use std::time::SystemTime;
 
-// Type aliases for cleaner signatures
-type DestinationInfo = (String, Option<String>); // (source, group_id)
-
-struct ContextRequest {
-    prompt: String,
-    timestamp: u64,
-    profile_key: String,
-    source_name: Option<String>,
-}
-
-// Sequencer map stores a sender to a task that processes responses sequentially for a context
-type SequencerMap = HashMap<
-    String,
-    mpsc::UnboundedSender<(DestinationInfo, ContextRequest)>
->;
 
 const MODEL_MAX_TOKENS: i32 = 1_000_000; // gemini-3-flash-preview limit
 const TOKEN_LIMIT: i32 = MODEL_MAX_TOKENS * 95 / 100; // 95% of limit
@@ -36,29 +20,23 @@ enum BotResponse {
 
 #[derive(Clone)]
 pub struct SessionManager {
-    signal_client: Arc<Mutex<SignalClient>>,
+    signal_client: SignalClient,
     ai_client: VertexClient,
-    history: Arc<Mutex<HashMap<String, VecDeque<Content>>>>,
-    sequencers: Arc<Mutex<SequencerMap>>,
-    model_preferences: Arc<Mutex<HashMap<String, String>>>,
+    state: StateManager,
     bot_number: String,
     memory: Memory,
     profile_manager: DbProfileManager,
-    sent_messages: Arc<Mutex<HashMap<u64, (String, String)>>>, // Timestamp -> (Prompt, Response)
 }
 
 impl SessionManager {
-    pub fn new(signal_client: Arc<Mutex<SignalClient>>, ai_client: VertexClient, bot_number: String, profile_manager: DbProfileManager) -> Self {
+    pub fn new(signal_client: SignalClient, ai_client: VertexClient, bot_number: String, profile_manager: DbProfileManager) -> Self {
         Self {
             signal_client,
             ai_client,
-            history: Arc::new(Mutex::new(HashMap::new())),
-            sequencers: Arc::new(Mutex::new(HashMap::new())),
-            model_preferences: Arc::new(Mutex::new(HashMap::new())),
+            state: StateManager::new(),
             bot_number,
             memory: Memory::new("data/learned_behaviors.json"),
             profile_manager,
-            sent_messages: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -88,11 +66,7 @@ impl SessionManager {
                     role: "user".to_string(),
                     parts: vec![Part { text: Some(history_text) }],
                 };
-                {
-                    let mut history_guard = self.history.lock().await;
-                    let chat_history = history_guard.entry(context_key.clone()).or_insert_with(VecDeque::new);
-                    chat_history.push_back(user_content);
-                }
+                self.state.add_user_message(&context_key, user_content).await;
 
                 // Manage Context Window (Async, non-blocking to other contexts)
                 self.manage_context_window(&context_key).await;
@@ -172,8 +146,7 @@ impl SessionManager {
                 // Handle Reaction
                 if reaction.target_author == self.bot_number {
                      // Check if we have the message context
-                     let sent_guard = self.sent_messages.lock().await;
-                     if let Some((prompt, response)) = sent_guard.get(&reaction.target_sent_timestamp) {
+                     if let Some((prompt, response)) = self.state.get_sent_message(reaction.target_sent_timestamp).await {
                          let prompt_clone = prompt.clone();
                          let response_clone = response.clone();
                          let emoji_clone = reaction.emoji.clone();
@@ -204,12 +177,8 @@ impl SessionManager {
     }
 
     async fn handle_reset(&self, context_key: &str, reply_source: &str, reply_group_id: Option<&str>) {
-        {
-            let mut history_guard = self.history.lock().await;
-            history_guard.remove(context_key);
-        }
-        let mut sc = self.signal_client.lock().await;
-        let _ = sc.send_message(reply_source, reply_group_id, "Conversation history cleared.", None).await;
+        self.state.clear_history(context_key).await;
+        let _ = self.signal_client.send_message(reply_source, reply_group_id, "Conversation history cleared.", None).await;
     }
 
     async fn handle_help(&self, reply_source: &str, reply_group_id: Option<&str>) {
@@ -222,8 +191,7 @@ impl SessionManager {
                         - Mention 'Piotr' or reply to me in groups.\n\
                         - DM me directly.\n\
                         - Ask for 'image', 'draw', 'sketch' for images.";
-        let mut sc = self.signal_client.lock().await;
-        let _ = sc.send_message(reply_source, reply_group_id, help_msg, None).await;
+        let _ = self.signal_client.send_message(reply_source, reply_group_id, help_msg, None).await;
     }
 
     async fn handle_model(&self, context_key: &str, reply_source: &str, reply_group_id: Option<&str>, command_text: &str) {
@@ -239,25 +207,20 @@ impl SessionManager {
                  - imagen-3.0-generate-001 (Images)".to_string()
             },
             Some("auto") => {
-                let mut prefs = self.model_preferences.lock().await;
-                prefs.remove(context_key);
+                self.state.remove_model_preference(context_key).await;
                 "Model set to AUTO (I will decide best model based on intent).".to_string()
             },
             Some(model) => {
-                // Basic validation could be added here, but open-ended is fine for now
-                let mut prefs = self.model_preferences.lock().await;
-                prefs.insert(context_key.to_string(), model.to_string());
+                self.state.set_model_preference(context_key, model).await;
                 format!("Model set to: {}. I will use this for all text responses.", model)
             },
             None => {
-                 let prefs = self.model_preferences.lock().await;
-                 let current = prefs.get(context_key).map(|s| s.as_str()).unwrap_or("auto");
+                 let current = self.state.get_model_preference(context_key).await.unwrap_or_else(|| "auto".to_string());
                  format!("Current model: {}. Use '/model list' to see options.", current)
             }
         };
 
-        let mut sc = self.signal_client.lock().await;
-        let _ = sc.send_message(reply_source, reply_group_id, &response, None).await;
+        let _ = self.signal_client.send_message(reply_source, reply_group_id, &response, None).await;
     }
 
     async fn process_ai_request(&self, source: String, group_id: Option<String>, context_key: String, prompt: String, timestamp: u64, profile_key: String, source_name: Option<String>) {
@@ -313,14 +276,7 @@ impl SessionManager {
         };
 
         // Clone history to Vec for API (Snapshot)
-        let history_vec: Vec<Content> = {
-            let history_guard = self.history.lock().await;
-            if let Some(hist) = history_guard.get(context_key) {
-                hist.iter().cloned().collect()
-            } else {
-                Vec::new()
-            }
-        };
+        let history_vec: Vec<Content> = self.state.get_history_snapshot(context_key).await;
 
         // Inject Learned Examples if available
         let mut final_history = Vec::new();
@@ -412,23 +368,19 @@ impl SessionManager {
     }
 
     async fn get_sequencer_tx(&self, context_key: String, group_id_context: Option<String>) -> mpsc::UnboundedSender<(DestinationInfo, ContextRequest)> {
-        let mut seq_map = self.sequencers.lock().await;
-        if let Some(tx) = seq_map.get(&context_key) {
-            tx.clone()
+        if let Some(tx) = self.state.get_sequencer_tx(&context_key).await {
+            tx
         } else {
             let (tx, mut rx) = mpsc::unbounded_channel::<(DestinationInfo, ContextRequest)>();
-            seq_map.insert(context_key.clone(), tx.clone());
+            self.state.insert_sequencer_tx(&context_key, tx.clone()).await;
 
             // Spawn Sequencer Task for this context
-            let history_seq = self.history.clone();
             let signal_client_seq = self.signal_client.clone();
-            let sent_messages_seq = self.sent_messages.clone();
+            let state_seq = self.state.clone();
             let context_key_seq = context_key.clone();
 
-            let _memory_seq = self.memory.clone();
             let ai_client_seq = self.ai_client.clone();
             let profile_manager_seq = self.profile_manager.clone();
-            let model_prefs_seq = self.model_preferences.clone();
             let self_clone_seq = self.clone();
 
             tokio::spawn(async move {
@@ -437,18 +389,12 @@ impl SessionManager {
                     let group_id_spawn_clone = group_id_context.clone();
 
                     // Send Read Receipt
-                    {
-                        let mut sc = signal_client_seq.lock().await;
-                        if let Err(e) = sc.send_receipt(&reply_source, request.timestamp).await {
-                            warn!("Failed to send read receipt: {:?}", e);
-                        }
+                    if let Err(e) = signal_client_seq.send_receipt(&reply_source, request.timestamp).await {
+                        warn!("Failed to send read receipt: {:?}", e);
                     }
 
                     // Start Typing
-                    {
-                        let mut sc = signal_client_seq.lock().await;
-                        let _ = sc.send_typing(&reply_source, reply_group_id.as_deref()).await;
-                    }
+                    let _ = signal_client_seq.send_typing(&reply_source, reply_group_id.as_deref()).await;
 
                     // Pre-Processing (Intent & Mention Differentiation)
                     // Differentiate a passing mention from a direct address
@@ -456,10 +402,7 @@ impl SessionManager {
                     let is_mentioned = prompt_lower.contains("piotr") || prompt_lower.contains("@piotr") || prompt_lower.contains("￼");
                     let mut should_abort_generation = false;
 
-                    let model_override = {
-                        let prefs = model_prefs_seq.lock().await;
-                        prefs.get(&context_key_seq).cloned()
-                    };
+                    let model_override = state_seq.get_model_preference(&context_key_seq).await;
 
                     let response = if let Some(model) = model_override {
                         info!("Using override model: {}", model);
@@ -548,44 +491,20 @@ impl SessionManager {
                                     role: "model".to_string(),
                                     parts: vec![Part { text: Some(text.clone()) }],
                                 };
-                                {
-                                    let mut history_guard = history_seq.lock().await;
-                                    let hist = history_guard.entry(context_key_seq.clone()).or_insert_with(VecDeque::new);
-                                    hist.push_back(model_content.clone());
-                                    // No manual pruning here, reliance on manage_context_window called on input
-                                    // But we should probably check here too? No, usually input triggers it is fine.
+                                state_seq.add_model_message(&context_key_seq, model_content).await;
 
-                                    // Retrieve the LAST user prompt to store in sent_messages
-                                    // This is a bit tricky because we just pushed the response.
-                                    // The user prompt is the one before.
-                                    if hist.len() >= 2 {
-                                        if let Some(last_user) = hist.get(hist.len() - 2) {
-                                             if last_user.role == "user" {
-                                                 if let Some(user_text) = last_user.parts.first().and_then(|p| p.text.clone()) {
-                                                     // We have (User Prompt, Bot Response)
-                                                     // We need the timestamp of the *response* we are about to send.
-                                                     // Signal sends timestamps in ms.
-                                                     let now_ts = SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-                                                      {
-                                                          let mut sent_guard = sent_messages_seq.lock().await;
-                                                          sent_guard.insert(now_ts, (user_text, text.clone()));
-                                                          // Cleanup old sent messages (optional, skipping for brevity but good practice)
-                                                      }
-                                                 }
-                                             }
-                                        }
-                                    }
+                                if let Some(user_text) = state_seq.get_last_user_prompt(&context_key_seq).await {
+                                    let now_ts = SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+                                    state_seq.insert_sent_message(now_ts, user_text, text.clone()).await;
                                 }
 
                                 // Send Message
-                                let mut sc = signal_client_seq.lock().await;
-                                if let Err(e) = sc.send_message(&reply_source, reply_group_id.as_deref(), &text, None).await {
+                                if let Err(e) = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), &text, None).await {
                                     error!("Failed to send Signal response: {:?}", e);
                                 }
                             },
                             BotResponse::Image(filename, text) => {
-                                let mut sc = signal_client_seq.lock().await;
-                                if let Err(e) = sc.send_message(&reply_source, reply_group_id.as_deref(), &text, Some(&filename)).await {
+                                if let Err(e) = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), &text, Some(&filename)).await {
                                     error!("Failed to send image: {:?}", e);
                                 }
                                 // Cleanup image after sending
@@ -593,16 +512,12 @@ impl SessionManager {
                                 let _ = std::fs::remove_file(&filename);
                             },
                             BotResponse::Error(err_msg) => {
-                                let mut sc = signal_client_seq.lock().await;
-                                let _ = sc.send_message(&reply_source, reply_group_id.as_deref(), &err_msg, None).await;
+                                let _ = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), &err_msg, None).await;
                             },
                         }
 
                         // Stop typing
-                        {
-                            let mut sc = signal_client_seq.lock().await;
-                            let _ = sc.stop_typing(&reply_source, reply_group_id.as_deref()).await;
-                        }
+                        let _ = signal_client_seq.stop_typing(&reply_source, reply_group_id.as_deref()).await;
                     }
                 }
             });
@@ -611,38 +526,20 @@ impl SessionManager {
     }
 
     async fn manage_context_window(&self, context_key: &str) {
-        // 1. Get current history snapshot
-        let history_snapshot: Vec<Content> = {
-            let history_guard = self.history.lock().await;
-            if let Some(hist) = history_guard.get(context_key) {
-                // Heuristic: If message count is low, don't bother checking tokens yet.
-                // 1M tokens is A LOT. 30 messages is nothing usually.
-                if hist.len() < 30 {
-                    return;
-                }
-                hist.iter().cloned().collect()
-            } else {
-                return;
-            }
-        };
+        if self.state.get_history_len(context_key).await < 30 {
+            return;
+        }
 
-        // 2. Count Tokens
-        // Using "gemini-3-flash-preview" as the reference model for token counting
+        let history_snapshot = self.state.get_history_snapshot(context_key).await;
+
         match self.ai_client.count_tokens(history_snapshot, "gemini-3-flash-preview").await {
            Ok(count) => {
                if count > TOKEN_LIMIT {
                    info!("Context window for {} is full ({} tokens > {}). Pruning...", crate::utils::anonymize(context_key), count, TOKEN_LIMIT);
-                   let mut history_guard = self.history.lock().await;
-                   if let Some(hist) = history_guard.get_mut(context_key) {
-                       // Prune oldest 4 messages (User + Bot x 2) to clear space
-                       if hist.len() > 4 {
-                           hist.pop_front();
-                           hist.pop_front();
-                           hist.pop_front();
-                           hist.pop_front();
-                       } else {
-                           hist.clear();
-                       }
+                   if self.state.get_history_len(context_key).await > 4 {
+                       self.state.prune_history(context_key, 4).await;
+                   } else {
+                       self.state.clear_history(context_key).await;
                    }
                }
            },

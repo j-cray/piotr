@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::process::Command;
 use tokio::sync::mpsc;
 use log::{info, error, warn};
 
@@ -111,16 +111,14 @@ pub struct GroupInfo {
     pub group_type: String,
 }
 
-#[allow(dead_code)]
+#[derive(Clone)]
 pub struct SignalClient {
     user_phone: String,
-    child: Child,
-    stdin: Option<ChildStdin>, // We might need to keep this to write to it
-    // stdout reader will be moved to a background task
+    tx: mpsc::Sender<Value>,
 }
 
 impl SignalClient {
-    pub async fn new(user_phone: &str) -> Result<Self> {
+    pub async fn new(user_phone: &str) -> Result<(Self, mpsc::Receiver<SignalMessage>)> {
         info!("Starting signal-cli for user: [REDACTED]");
         let mut child = Command::new("signal-cli")
             .arg("--config")
@@ -135,19 +133,32 @@ impl SignalClient {
             .spawn()
             .context("Failed to spawn signal-cli")?;
 
-        let stdin = child.stdin.take();
+        let mut stdin = child.stdin.take().context("No stdin handle")?;
+        let stdout = child.stdout.take().context("No stdout handle")?;
 
-        Ok(Self {
-            user_phone: user_phone.to_string(),
-            child,
-            stdin,
-        })
-    }
+        let (tx_in, mut rx_in) = mpsc::channel::<Value>(100);
+        let (tx_out, rx_out) = mpsc::channel::<SignalMessage>(100);
 
-    pub async fn run_listener(&mut self) -> Result<mpsc::Receiver<SignalMessage>> {
-        let stdout = self.child.stdout.take().context("No stdout handle")?;
-        let (tx, rx) = mpsc::channel(100);
+        // Stdin writer task
+        tokio::spawn(async move {
+            while let Some(payload) = rx_in.recv().await {
+                if let Ok(payload_str) = serde_json::to_string(&payload) {
+                    info!("Sending Signal RPC");
+                    log::debug!("Sending Signal RPC payload: [REDACTED]");
+                    if stdin.write_all(payload_str.as_bytes()).await.is_err() {
+                        break;
+                    }
+                    if stdin.write_all(b"\n").await.is_err() {
+                        break;
+                    }
+                    if stdin.flush().await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
 
+        // Stdout reader task
         tokio::spawn(async move {
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
@@ -155,41 +166,36 @@ impl SignalClient {
             while let Ok(Some(line)) = lines.next_line().await {
                 if line.trim().is_empty() { continue; }
 
-                // signal-cli jsonRpc output might behave differently than pure json output
-                // But typically it sends events.
-                // Let's try to parse as generic JSON first to see what we get, or directly to SignalMessage
-
-                // Log raw line for debugging (REDACTED)
                 log::debug!("Raw Signal Line received");
 
-                // Try parsing as Notification first
                 if let Ok(rpc) = serde_json::from_str::<JsonRpcNotification>(&line) {
                      if rpc.method == "receive" {
-                        if let Err(e) = tx.send(rpc.params).await {
+                        if let Err(e) = tx_out.send(rpc.params).await {
                             error!("Receiver dropped: {}", e);
                             break;
                         }
                      }
                 } else if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(&line) {
-                    // It's a response to a command (success or error)
                     if let Some(error) = resp.error {
                         warn!("Signal Command Failed (ID: {:?}): {} - Data: {:?}", resp.id, error.message, error.data);
                     } else {
-                        // Success response, currently we don't correlate IDs but good to log at debug/info
                         info!("Signal Command Success (ID: {:?}): {:?}", resp.id, resp.result);
                     }
                 } else {
-                    // Unknown formation
                     warn!("Unknown Signal output: {}", line);
                 }
             }
             info!("Signal listener loop ended");
+            let _ = child.wait().await; // Wait for child process to exit completely
         });
 
-        Ok(rx)
+        Ok((Self {
+            user_phone: user_phone.to_string(),
+            tx: tx_in,
+        }, rx_out))
     }
 
-    pub async fn send_message(&mut self, recipient: &str, group_id: Option<&str>, message: &str, attachment: Option<&str>) -> Result<()> {
+    pub async fn send_message(&self, recipient: &str, group_id: Option<&str>, message: &str, attachment: Option<&str>) -> Result<()> {
         let mut params = if let Some(gid) = group_id {
             json!({
                 "groupId": gid,
@@ -218,7 +224,7 @@ impl SignalClient {
         self.send_payload(&payload).await
     }
 
-    pub async fn send_receipt(&mut self, recipient: &str, target_timestamp: u64) -> Result<()> {
+    pub async fn send_receipt(&self, recipient: &str, target_timestamp: u64) -> Result<()> {
         let payload = json!({
             "jsonrpc": "2.0",
             "method": "sendReceipt",
@@ -233,7 +239,7 @@ impl SignalClient {
         self.send_payload(&payload).await
     }
 
-    pub async fn send_typing(&mut self, recipient: &str, group_id: Option<&str>) -> Result<()> {
+    pub async fn send_typing(&self, recipient: &str, group_id: Option<&str>) -> Result<()> {
         let params = if let Some(gid) = group_id {
             json!({ "groupId": [gid] })
         } else {
@@ -250,7 +256,7 @@ impl SignalClient {
         self.send_payload(&payload).await
     }
 
-    pub async fn stop_typing(&mut self, recipient: &str, group_id: Option<&str>) -> Result<()> {
+    pub async fn stop_typing(&self, recipient: &str, group_id: Option<&str>) -> Result<()> {
         let params = if let Some(gid) = group_id {
             json!({ "groupId": [gid], "stop": true })
         } else {
@@ -267,17 +273,8 @@ impl SignalClient {
         self.send_payload(&payload).await
     }
 
-    async fn send_payload(&mut self, payload: &Value) -> Result<()> {
-        if let Some(stdin) = &mut self.stdin {
-             let payload_str = serde_json::to_string(payload)?;
-             info!("Sending Signal RPC");
-             log::debug!("Sending Signal RPC payload: [REDACTED]");
-             stdin.write_all(payload_str.as_bytes()).await?;
-             stdin.write_all(b"\n").await?;
-             stdin.flush().await?;
-        } else {
-            return Err(anyhow::anyhow!("Signal stdin is not available"));
-        }
+    async fn send_payload(&self, payload: &Value) -> Result<()> {
+        self.tx.send(payload.clone()).await.map_err(|_| anyhow::anyhow!("Failed to send payload to background task"))?;
         Ok(())
     }
 }
