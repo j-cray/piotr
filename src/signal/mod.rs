@@ -229,8 +229,8 @@ impl SignalClient {
             "jsonrpc": "2.0",
             "method": "sendReceipt",
             "params": {
-                "recipient": [recipient],
-                "targetTimestamp": [target_timestamp],
+                "recipient": recipient,
+                "targetTimestamp": target_timestamp,
                 "type": "read"
             },
             "id": "2"
