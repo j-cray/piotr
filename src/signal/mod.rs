@@ -177,7 +177,18 @@ impl SignalClient {
                      }
                 } else if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(&line) {
                     if let Some(error) = resp.error {
-                        warn!("Signal Command Failed (ID: {:?}): {} - Data: {:?}", resp.id, error.message, error.data);
+                        let is_unregistered = error.data.as_ref()
+                            .and_then(|d| d.get("response"))
+                            .and_then(|r| r.get("results"))
+                            .and_then(|res| res.as_array())
+                            .map(|arr| arr.iter().any(|item| item.get("type").and_then(|t| t.as_str()) == Some("UNREGISTERED_FAILURE")))
+                            .unwrap_or(false);
+
+                        if is_unregistered {
+                            info!("Signal Command Ignored (ID: {:?}): Recipient is unregistered - Data: {:?}", resp.id, error.data);
+                        } else {
+                            warn!("Signal Command Failed (ID: {:?}): {} - Data: {:?}", resp.id, error.message, error.data);
+                        }
                     } else {
                         info!("Signal Command Success (ID: {:?}): {:?}", resp.id, resp.result);
                     }
