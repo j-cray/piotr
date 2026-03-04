@@ -1,5 +1,5 @@
 use tokio::sync::mpsc;
-use log::{info, error, warn};
+use tracing::{info, error, warn};
 use rand::RngExt; // For random_bool
 
 use crate::ai::{VertexClient, Content, Part, memory::{Memory, DbProfileManager}};

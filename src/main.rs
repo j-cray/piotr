@@ -6,12 +6,12 @@ mod utils;
 mod state_manager;
 
 use dotenv::dotenv;
-use log::info;
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv().ok();
-    env_logger::init();
+    tracing_subscriber::fmt::init();
 
     info!("Starting Signal Bot...");
 
@@ -26,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Migrate existing profiles (if any)
     if let Err(e) = profile_manager.migrate_json_profiles("data/profiles").await {
-        log::warn!("Failed to migrate profiles: {:?}", e);
+        tracing::warn!("Failed to migrate profiles: {:?}", e);
         // Continue anyway, maybe folder doesn't exist
     }
 
@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
     let (signal_client, mut rx) = match signal::SignalClient::new(&signal_phone).await {
         Ok(res) => res,
         Err(e) => {
-            log::error!("Failed to start SignalClient: {:?}", e);
+            tracing::error!("Failed to start SignalClient: {:?}", e);
             return Err(e);
         }
     };
@@ -55,7 +55,9 @@ async fn main() -> anyhow::Result<()> {
     let bot_number = signal_phone.clone();
     let session_manager = bot::SessionManager::new(signal_client, ai_client, bot_number, profile_manager);
 
-    // Event Loop
+    // Event Loop with Backpressure
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(100));
+
     while let Some(msg) = rx.recv().await {
         if let Some(source) = msg.envelope.as_ref().map(|e| &e.source) {
             info!("Received Signal Message from: {}", crate::utils::anonymize(source));
@@ -66,7 +68,13 @@ async fn main() -> anyhow::Result<()> {
         if let Some(envelope) = msg.envelope {
              // Clone SessionManager for async handling (it's cheap, just Arcs)
              let sm = session_manager.clone();
+
+             // Acquire a permit before spawning. This blocks if there are 100 concurrent tasks already.
+             let permit = semaphore.clone().acquire_owned().await.expect("Semaphore closed");
+
              tokio::spawn(async move {
+                 // The permit is held for the duration of this task, limiting concurrency.
+                 let _permit = permit;
                  sm.handle_message(envelope).await;
              });
         }

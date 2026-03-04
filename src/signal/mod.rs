@@ -5,7 +5,7 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
-use log::{info, error, warn};
+use tracing::{info, error, warn};
 
 #[derive(Serialize)]
 #[allow(dead_code)]
