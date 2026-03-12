@@ -39,8 +39,8 @@
 
           shellHook = ''
             export RUST_BACKTRACE=1
-            export GCP_PROJECT_ID=piotr-487123
-            export CLOUDSDK_CORE_PROJECT=piotr-487123
+            # GCP_PROJECT_ID and CLOUDSDK_CORE_PROJECT should be set in your environment,
+            # for example by creating a .env file and using direnv.
           '';
         };
       }
