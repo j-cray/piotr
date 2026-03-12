@@ -1,0 +1,28 @@
+name: "Update Nix flake.lock"
+
+on:
+  schedule:
+    # Run at 04:00 Pacific Time (11:00 UTC)
+    - cron: '0 11 * * *'
+  workflow_dispatch: # Allow running manually
+
+jobs:
+  update-flake:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Update flake.lock
+        id: update
+        uses: DeterminateSystems/update-flake-lock@main
+        with:
+          pr-title: "chore: update flake.lock dependencies"
+          pr-labels: |
+            dependencies
+            nix
+          # Optional: You can specify a custom GitHub token if needed for branch protections
+          # token: ${{ secrets.GH_TOKEN }}
