@@ -179,7 +179,9 @@ impl SessionManager {
 
     async fn handle_reset(&self, context_key: &str, reply_source: &str, reply_group_id: Option<&str>) {
         self.state.clear_history(context_key).await;
-        let _ = self.signal_client.send_message(reply_source, reply_group_id, "Conversation history cleared.", None).await;
+        if let Err(e) = self.signal_client.send_message(reply_source, reply_group_id, "Conversation history cleared.", None).await {
+            warn!("Failed to send reset confirmation to {}: {:?}", crate::utils::anonymize(reply_source), e);
+        }
     }
 
     async fn handle_help(&self, reply_source: &str, reply_group_id: Option<&str>) {
@@ -192,7 +194,9 @@ impl SessionManager {
                         - Mention 'Piotr' or reply to me in groups.\n\
                         - DM me directly.\n\
                         - Ask for 'image', 'draw', 'sketch' for images.";
-        let _ = self.signal_client.send_message(reply_source, reply_group_id, help_msg, None).await;
+        if let Err(e) = self.signal_client.send_message(reply_source, reply_group_id, help_msg, None).await {
+            warn!("Failed to send help message to {}: {:?}", crate::utils::anonymize(reply_source), e);
+        }
     }
 
     async fn handle_model(&self, context_key: &str, reply_source: &str, reply_group_id: Option<&str>, command_text: &str) {
@@ -221,7 +225,9 @@ impl SessionManager {
             }
         };
 
-        let _ = self.signal_client.send_message(reply_source, reply_group_id, &response, None).await;
+        if let Err(e) = self.signal_client.send_message(reply_source, reply_group_id, &response, None).await {
+            warn!("Failed to send model response to {}: {:?}", crate::utils::anonymize(reply_source), e);
+        }
     }
 
     async fn process_ai_request(&self, reply_address: String, group_id: Option<String>, context_key: String, prompt: String, timestamp: u64, profile_key: String, source_name: Option<String>) {
@@ -249,8 +255,9 @@ impl SessionManager {
         match self.ai_client.generate_image(prompt, model).await {
             Ok(image_bytes) => {
                 info!("Image generation successful. Bytes: {}", image_bytes.len());
-                let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
-                let filename = format!("/tmp/piotr_img_{}.png", timestamp);
+                // Use a random suffix to avoid filename collisions even if clock is unusual
+                let suffix = rand::rng().random::<u64>();
+                let filename = format!("/tmp/piotr_img_{}.png", suffix);
                 if let Err(e) = std::fs::write(&filename, image_bytes) {
                     error!("Failed to write image to temp file: {:?}", e);
                     BotResponse::Error("I tried to draw something but my pencil broke (write error).".to_string())
@@ -495,7 +502,10 @@ impl SessionManager {
                                 state_seq.add_model_message(&context_key_seq, model_content).await;
 
                                 if let Some(user_text) = state_seq.get_last_user_prompt(&context_key_seq).await {
-                                    let now_ts = SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+                                    let now_ts = SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_millis() as u64;
                                     state_seq.insert_sent_message(now_ts, user_text, text.clone()).await;
                                 }
 

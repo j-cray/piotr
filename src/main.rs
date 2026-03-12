@@ -1,6 +1,7 @@
 use dotenv::dotenv;
 use tracing::{info, error, Instrument};
 use std::time::Duration;
+use anyhow::Context;
 use piotr::{ai, bot, db, signal, utils};
 
 #[tokio::main]
@@ -11,12 +12,14 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting Signal Bot...");
 
     // Initialize Database
-    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let database_url = std::env::var("DATABASE_URL")
+        .context("DATABASE_URL environment variable not set")?;
     let db = db::Database::new(&database_url).await?;
     db.run_migrations().await?;
 
     // Initialize Profile Manager
-    let encryption_key = std::env::var("PROFILE_ENCRYPTION_KEY").expect("PROFILE_ENCRYPTION_KEY must be set");
+    let encryption_key = std::env::var("PROFILE_ENCRYPTION_KEY")
+        .context("PROFILE_ENCRYPTION_KEY environment variable not set")?;
     let profile_manager = ai::memory::DbProfileManager::new(db.pool.clone(), &encryption_key)?;
 
     // Migrate existing profiles (if any)
@@ -31,9 +34,15 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize Signal service - Auto-detect linked number
     let accounts_json = std::fs::read_to_string("data/signal-cli/data/accounts.json")
-        .expect("Failed to read accounts.json. Did you run the linking script?");
-    let accounts: serde_json::Value = serde_json::from_str(&accounts_json).expect("Invalid accounts.json format");
-    let signal_phone = accounts["accounts"][0]["number"].as_str().expect("Could not find number in accounts.json").to_string();
+        .context("Failed to read accounts.json - did you run the linking script?")?;
+    let accounts: serde_json::Value = serde_json::from_str(&accounts_json)
+        .context("accounts.json is not valid JSON")?;
+    let signal_phone = accounts["accounts"]
+        .get(0)
+        .and_then(|v| v.get("number"))
+        .and_then(|v| v.as_str())
+        .context("Could not find accounts[0].number in accounts.json - check the file structure")?
+        .to_string();
 
     let (signal_client, mut rx) = match signal::SignalClient::new(&signal_phone).await {
         Ok(res) => {
@@ -73,7 +82,13 @@ async fn main() -> anyhow::Result<()> {
              let ts = envelope.timestamp;
 
              // Acquire a permit before spawning. This blocks if there are 100 concurrent tasks already.
-             let permit = semaphore.clone().acquire_owned().await.expect("Semaphore closed");
+             let permit = match semaphore.clone().acquire_owned().await {
+                 Ok(p) => p,
+                 Err(e) => {
+                     error!("Failed to acquire semaphore permit: {}", e);
+                     continue;
+                 }
+             };
 
              let span = tracing::info_span!("handle_message", source = %utils::anonymize(&source_for_span), ts = ts);
 
