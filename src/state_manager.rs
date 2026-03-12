@@ -81,8 +81,11 @@ struct StateActor {
     sequencers: SequencerMap,
     model_preferences: HashMap<String, String>,
     sent_messages: HashMap<u64, (String, String)>, // Timestamp -> (Prompt, Response)
+    sent_messages_order: VecDeque<u64>,            // Insertion order for eviction
     receiver: mpsc::Receiver<StateCommand>,
 }
+
+const MAX_SENT_MESSAGES: usize = 10_000;
 
 impl StateActor {
     fn new(receiver: mpsc::Receiver<StateCommand>) -> Self {
@@ -91,6 +94,7 @@ impl StateActor {
             sequencers: HashMap::new(),
             model_preferences: HashMap::new(),
             sent_messages: HashMap::new(),
+            sent_messages_order: VecDeque::new(),
             receiver,
         }
     }
@@ -160,7 +164,14 @@ impl StateActor {
                     self.model_preferences.remove(&context_key);
                 }
                 StateCommand::InsertSentMessage { timestamp, prompt, response } => {
+                    // Evict oldest entry if at capacity to prevent unbounded memory growth
+                    if self.sent_messages.len() >= MAX_SENT_MESSAGES {
+                        if let Some(oldest_ts) = self.sent_messages_order.pop_front() {
+                            self.sent_messages.remove(&oldest_ts);
+                        }
+                    }
                     self.sent_messages.insert(timestamp, (prompt, response));
+                    self.sent_messages_order.push_back(timestamp);
                 }
                 StateCommand::GetSentMessage { timestamp, resp } => {
                     let msg = self.sent_messages.get(&timestamp).cloned();
