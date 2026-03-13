@@ -77,8 +77,44 @@ Output ONLY the single keyword."#;
 pub struct VertexClient {
     project_id: String,
     http_client: Client,
-    last_request_time: Arc<Mutex<Instant>>,
+    rate_limiters: Arc<EndpointRateLimiters>,
     token_provider: Arc<OnceCell<AccessTokenCredentials>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndpointType {
+    GenerateContent,
+    GenerateImage,
+    ClassifyIntent,
+    AnalyzeReaction,
+    AnalyzeProfileUpdate,
+    AnalyzeGroupProfileUpdate,
+    CountTokens,
+}
+
+pub struct EndpointRateLimiters {
+    pub generate_content: Mutex<Instant>,
+    pub generate_image: Mutex<Instant>,
+    pub classify_intent: Mutex<Instant>,
+    pub analyze_reaction: Mutex<Instant>,
+    pub analyze_profile_update: Mutex<Instant>,
+    pub analyze_group_profile_update: Mutex<Instant>,
+    pub count_tokens: Mutex<Instant>,
+}
+
+impl EndpointRateLimiters {
+    pub fn new() -> Self {
+        let past = Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
+        Self {
+            generate_content: Mutex::new(past),
+            generate_image: Mutex::new(past),
+            classify_intent: Mutex::new(past),
+            analyze_reaction: Mutex::new(past),
+            analyze_profile_update: Mutex::new(past),
+            analyze_group_profile_update: Mutex::new(past),
+            count_tokens: Mutex::new(past),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
@@ -142,8 +178,7 @@ impl VertexClient {
         Self {
             project_id: project_id.to_string(),
             http_client: Client::new(),
-            // Initialize to past so first request is immediate
-            last_request_time: Arc::new(Mutex::new(Instant::now().checked_sub(Duration::from_secs(2)).unwrap())),
+            rate_limiters: Arc::new(EndpointRateLimiters::new()),
             token_provider: Arc::new(OnceCell::new()),
         }
     }
@@ -159,8 +194,17 @@ impl VertexClient {
         Ok(access_token.token)
     }
 
-    async fn wait_for_rate_limit(&self) {
-        let mut last = self.last_request_time.lock().await;
+    async fn wait_for_rate_limit(&self, endpoint: EndpointType) {
+        let mutex = match endpoint {
+            EndpointType::GenerateContent => &self.rate_limiters.generate_content,
+            EndpointType::GenerateImage => &self.rate_limiters.generate_image,
+            EndpointType::ClassifyIntent => &self.rate_limiters.classify_intent,
+            EndpointType::AnalyzeReaction => &self.rate_limiters.analyze_reaction,
+            EndpointType::AnalyzeProfileUpdate => &self.rate_limiters.analyze_profile_update,
+            EndpointType::AnalyzeGroupProfileUpdate => &self.rate_limiters.analyze_group_profile_update,
+            EndpointType::CountTokens => &self.rate_limiters.count_tokens,
+        };
+        let mut last = mutex.lock().await;
         let now = Instant::now();
         let elapsed = now.duration_since(*last);
         if elapsed < Duration::from_millis(1500) {
@@ -195,7 +239,7 @@ impl VertexClient {
 
         let mut retries = 0;
         loop {
-            self.wait_for_rate_limit().await;
+            self.wait_for_rate_limit(EndpointType::GenerateContent).await;
             let token = self.get_token().await?; // Refresh token on loop in case it expired
 
             let resp = self.http_client.post(&url)
@@ -280,7 +324,7 @@ impl VertexClient {
 
         let mut retries = 0;
         loop {
-            self.wait_for_rate_limit().await;
+            self.wait_for_rate_limit(EndpointType::GenerateImage).await;
             let token = self.get_token().await?;
 
             let resp = self.http_client.post(&url)
@@ -344,7 +388,7 @@ impl VertexClient {
 
         let mut retries = 0;
         loop {
-            self.wait_for_rate_limit().await;
+            self.wait_for_rate_limit(EndpointType::ClassifyIntent).await;
             let token = self.get_token().await?;
 
             let resp = self.http_client.post(&url)
@@ -432,7 +476,7 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
 
         let mut retries = 0;
         loop {
-            self.wait_for_rate_limit().await;
+            self.wait_for_rate_limit(EndpointType::AnalyzeReaction).await;
             let token = self.get_token().await?;
 
             let resp = self.http_client.post(&url)
@@ -538,7 +582,7 @@ Structure:
 
         let mut retries = 0;
         loop {
-            self.wait_for_rate_limit().await;
+            self.wait_for_rate_limit(EndpointType::AnalyzeProfileUpdate).await;
             let token = self.get_token().await?;
 
             let resp = self.http_client.post(&url)
@@ -643,7 +687,7 @@ Structure:
 
         let mut retries = 0;
         loop {
-            self.wait_for_rate_limit().await;
+            self.wait_for_rate_limit(EndpointType::AnalyzeGroupProfileUpdate).await;
             let token = self.get_token().await?;
 
             let resp = self.http_client.post(&url)
@@ -708,7 +752,7 @@ Structure:
         let mut retries = 0;
         loop {
             // Rate limit check (shared with generate)
-            self.wait_for_rate_limit().await;
+            self.wait_for_rate_limit(EndpointType::CountTokens).await;
             let token = self.get_token().await?;
 
             let resp = self.http_client.post(&url)
