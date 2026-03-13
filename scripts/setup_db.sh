@@ -125,7 +125,7 @@ if grep -q "DATABASE_URL" .env; then
     ESCAPED_URL="postgres://${DB_USER}:${SECURE_PASS}@localhost:${PGPORT}/${DB_NAME}"
     # This sed pattern is simple; assuming standard format.
     # Note: password might contain special chars? openssl hex does not.
-    sed -i "s|^DATABASE_URL=.*|DATABASE_URL=$ESCAPED_URL|" .env
+    sed "s|^DATABASE_URL=.*|DATABASE_URL=$ESCAPED_URL|" .env > .env.tmp && mv .env.tmp .env
     echo "Updated DATABASE_URL in .env with new credentials."
 else
     echo "Adding DATABASE_URL to .env..."
