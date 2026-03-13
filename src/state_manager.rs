@@ -79,6 +79,7 @@ pub enum StateCommand {
 struct StateActor {
     history: HashMap<String, VecDeque<Content>>,
     sequencers: SequencerMap,
+    sequencers_order: VecDeque<String>,            // Tracks access order for LRU eviction
     model_preferences: HashMap<String, String>,
     sent_messages: HashMap<u64, (String, String)>, // Timestamp -> (Prompt, Response)
     sent_messages_order: VecDeque<u64>,            // Insertion order for eviction
@@ -86,12 +87,14 @@ struct StateActor {
 }
 
 const MAX_SENT_MESSAGES: usize = 10_000;
+const MAX_SEQUENCERS: usize = 1_000;
 
 impl StateActor {
     fn new(receiver: mpsc::Receiver<StateCommand>) -> Self {
         Self {
             history: HashMap::new(),
             sequencers: HashMap::new(),
+            sequencers_order: VecDeque::new(),
             model_preferences: HashMap::new(),
             sent_messages: HashMap::new(),
             sent_messages_order: VecDeque::new(),
@@ -147,10 +150,48 @@ impl StateActor {
                     let _ = resp.send(result);
                 }
                 StateCommand::GetSequencerTx { context_key, resp } => {
-                    let tx = self.sequencers.get(&context_key).cloned();
+                    let mut is_closed = false;
+                    let tx = if let Some(sender) = self.sequencers.get(&context_key) {
+                        if sender.is_closed() {
+                            is_closed = true;
+                            None
+                        } else {
+                            Some(sender.clone())
+                        }
+                    } else {
+                        None
+                    };
+
+                    if is_closed {
+                        self.sequencers.remove(&context_key);
+                        self.sequencers_order.retain(|x| x != &context_key);
+                    } else if tx.is_some() {
+                        // Mark as recently used (LRU)
+                        self.sequencers_order.retain(|x| x != &context_key);
+                        self.sequencers_order.push_back(context_key.clone());
+                    }
+
                     let _ = resp.send(tx);
                 }
                 StateCommand::InsertSequencerTx { context_key, tx } => {
+                    // Cleanup any closed sequencers first to save capacity
+                    self.sequencers.retain(|_, sender| !sender.is_closed());
+                    self.sequencers_order.retain(|k| self.sequencers.contains_key(k));
+                    
+                    if !self.sequencers.contains_key(&context_key) && self.sequencers.len() >= MAX_SEQUENCERS {
+                        if let Some(oldest) = self.sequencers_order.pop_front() {
+                            self.sequencers.remove(&oldest);
+                        }
+                    }
+
+                    if !self.sequencers.contains_key(&context_key) {
+                        self.sequencers_order.push_back(context_key.clone());
+                    } else {
+                        // Move to back as it was just updated (LRU)
+                        self.sequencers_order.retain(|x| x != &context_key);
+                        self.sequencers_order.push_back(context_key.clone());
+                    }
+
                     self.sequencers.insert(context_key, tx);
                 }
                 StateCommand::GetModelPreference { context_key, resp } => {
