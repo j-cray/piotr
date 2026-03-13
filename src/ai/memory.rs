@@ -158,7 +158,7 @@ impl DbProfileManager {
         let id = Self::get_profile_id(raw_id);
 
         // Fetch from DB
-        let row: Option<(Vec<u8>,)> = sqlx::query_as("SELECT encrypted_blob FROM user_profiles WHERE user_id = $1")
+        let row: Option<(Vec<u8>,)> = sqlx::query_as("SELECT encrypted_blob FROM user_profiles WHERE user_id = ?")
             .bind(&id)
             .fetch_optional(&self.pool)
             .await?;
@@ -197,8 +197,8 @@ impl DbProfileManager {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
 
         sqlx::query(
-            "INSERT INTO user_profiles (user_id, encrypted_blob, last_updated) VALUES ($1, $2, $3)
-             ON CONFLICT(user_id) DO UPDATE SET encrypted_blob = $2, last_updated = $3"
+            "INSERT INTO user_profiles (user_id, encrypted_blob, last_updated) VALUES (?, ?, ?)
+             ON CONFLICT(user_id) DO UPDATE SET encrypted_blob = excluded.encrypted_blob, last_updated = excluded.last_updated"
         )
         .bind(&profile.id)
         .bind(blob)
@@ -212,7 +212,7 @@ impl DbProfileManager {
     pub async fn get_group_profile(&self, raw_id: &str, current_name: Option<String>) -> Result<GroupProfile> {
         let id = Self::get_profile_id(raw_id);
 
-        let row: Option<(Vec<u8>,)> = sqlx::query_as("SELECT encrypted_blob FROM group_profiles WHERE group_id = $1")
+        let row: Option<(Vec<u8>,)> = sqlx::query_as("SELECT encrypted_blob FROM group_profiles WHERE group_id = ?")
             .bind(&id)
             .fetch_optional(&self.pool)
             .await?;
@@ -248,8 +248,8 @@ impl DbProfileManager {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
 
         sqlx::query(
-            "INSERT INTO group_profiles (group_id, encrypted_blob, last_updated) VALUES ($1, $2, $3)
-             ON CONFLICT(group_id) DO UPDATE SET encrypted_blob = $2, last_updated = $3"
+            "INSERT INTO group_profiles (group_id, encrypted_blob, last_updated) VALUES (?, ?, ?)
+             ON CONFLICT(group_id) DO UPDATE SET encrypted_blob = excluded.encrypted_blob, last_updated = excluded.last_updated"
         )
         .bind(&profile.id)
         .bind(blob)
