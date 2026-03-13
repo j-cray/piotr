@@ -127,7 +127,7 @@ impl DbProfileManager {
     fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
         let cipher = XChaCha20Poly1305::new(&self.encryption_key.into());
         let mut nonce_bytes = [0u8; 24];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
         let nonce = XNonce::from_slice(&nonce_bytes);
 
         let ciphertext = cipher.encrypt(nonce, data)

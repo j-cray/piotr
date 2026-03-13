@@ -111,7 +111,7 @@ impl SessionManager {
                     if is_quote_reply || is_mentioned {
                         (true, text.clone())
                     } else {
-                        let mut rng = rand::thread_rng();
+                        let mut rng = rand::rng();
                         if rng.random_bool(0.10) { // 10% chance to just chime in
                             (true, text.clone())
                         } else {
