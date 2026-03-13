@@ -4,7 +4,7 @@ use tokio::sync::Mutex;
 use std::fs;
 use anyhow::{Result, Context};
 use crate::ai::ReactionAnalysis;
-use sqlx::PgPool;
+use sqlx::SqlitePool;
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
     XChaCha20Poly1305, XNonce
@@ -98,12 +98,12 @@ pub struct GroupProfile {
 
 #[derive(Clone)]
 pub struct DbProfileManager {
-    pool: PgPool,
+    pool: SqlitePool,
     encryption_key: [u8; 32],
 }
 
 impl DbProfileManager {
-    pub fn new(pool: PgPool, key_hex: &str) -> Result<Self> {
+    pub fn new(pool: SqlitePool, key_hex: &str) -> Result<Self> {
         let key_bytes = hex::decode(key_hex).context("Failed to decode PROFILE_ENCRYPTION_KEY hex")?;
         if key_bytes.len() != 32 {
             anyhow::bail!("PROFILE_ENCRYPTION_KEY must be 32 bytes (64 hex chars)");
@@ -158,7 +158,7 @@ impl DbProfileManager {
         let id = Self::get_profile_id(raw_id);
 
         // Fetch from DB
-        let row: Option<(Vec<u8>,)> = sqlx::query_as("SELECT encrypted_blob FROM user_profiles WHERE user_id = $1")
+        let row: Option<(Vec<u8>,)> = sqlx::query_as("SELECT encrypted_blob FROM user_profiles WHERE user_id = ?")
             .bind(&id)
             .fetch_optional(&self.pool)
             .await?;
@@ -197,8 +197,8 @@ impl DbProfileManager {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
 
         sqlx::query(
-            "INSERT INTO user_profiles (user_id, encrypted_blob, last_updated) VALUES ($1, $2, $3)
-             ON CONFLICT(user_id) DO UPDATE SET encrypted_blob = $2, last_updated = $3"
+            "INSERT INTO user_profiles (user_id, encrypted_blob, last_updated) VALUES (?, ?, ?)
+             ON CONFLICT(user_id) DO UPDATE SET encrypted_blob = excluded.encrypted_blob, last_updated = excluded.last_updated"
         )
         .bind(&profile.id)
         .bind(blob)
@@ -212,7 +212,7 @@ impl DbProfileManager {
     pub async fn get_group_profile(&self, raw_id: &str, current_name: Option<String>) -> Result<GroupProfile> {
         let id = Self::get_profile_id(raw_id);
 
-        let row: Option<(Vec<u8>,)> = sqlx::query_as("SELECT encrypted_blob FROM group_profiles WHERE group_id = $1")
+        let row: Option<(Vec<u8>,)> = sqlx::query_as("SELECT encrypted_blob FROM group_profiles WHERE group_id = ?")
             .bind(&id)
             .fetch_optional(&self.pool)
             .await?;
@@ -248,8 +248,8 @@ impl DbProfileManager {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
 
         sqlx::query(
-            "INSERT INTO group_profiles (group_id, encrypted_blob, last_updated) VALUES ($1, $2, $3)
-             ON CONFLICT(group_id) DO UPDATE SET encrypted_blob = $2, last_updated = $3"
+            "INSERT INTO group_profiles (group_id, encrypted_blob, last_updated) VALUES (?, ?, ?)
+             ON CONFLICT(group_id) DO UPDATE SET encrypted_blob = excluded.encrypted_blob, last_updated = excluded.last_updated"
         )
         .bind(&profile.id)
         .bind(blob)
@@ -358,8 +358,10 @@ mod tests {
     fn get_test_manager() -> DbProfileManager {
         // Mock pool isn't needed for encryption isolated testing, but struct requires it.
         // We can test encrypt/decrypt methods directly if we instantiate with dummy key.
+        // Note: any test making actual DB calls through this pool will fail at runtime
+        // rather than at setup. Given none of the encryption tests use the pool, this is acceptable.
         DbProfileManager {
-            pool: sqlx::postgres::PgPoolOptions::new().connect_lazy("postgres://dummy").unwrap(),
+            pool: sqlx::sqlite::SqlitePoolOptions::new().connect_lazy("sqlite::memory:").unwrap(),
             encryption_key: [1u8; 32],
         }
     }
@@ -409,6 +411,45 @@ mod tests {
         let special_chars = "👉👈🥺 \n\r\t \x00 null byte included";
         let special_hash = DbProfileManager::get_profile_id(special_chars);
         assert_eq!(special_hash.len(), 64);
+    }
+
+    /// Ensure that migrations and profile persistence work end-to-end on SQLite.
+    #[tokio::test]
+    async fn test_db_profile_round_trip() {
+        // Set up an in-memory SQLite database and run migrations.
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
+
+        // Create a DbProfileManager using the migrated pool.
+        let manager = DbProfileManager {
+            pool,
+            encryption_key: [1u8; 32],
+        };
+
+        // Use a stable raw identifier and derive the stored profile ID.
+        let raw_id = "+15555550000";
+        let profile_id = DbProfileManager::get_profile_id(raw_id);
+
+        // Create a UserProfile for round-trip testing.
+        let profile = UserProfile {
+            id: profile_id.clone(),
+            name: Some("Alice".to_string()),
+            nickname: None,
+            personality_summary: "Test profile".to_string(),
+            interaction_style: "testing".to_string(),
+            topics_of_interest: vec!["rust".to_string()],
+            last_updated: 1234567890,
+        };
+
+        // Save the profile and then read it back.
+        manager.save_profile(&profile).await.unwrap();
+        let loaded = manager.get_profile(raw_id, None).await.unwrap();
+
+        assert_eq!(loaded.id, profile.id, "loaded profile ID does not match");
+        assert_eq!(loaded.name, profile.name, "loaded profile name does not match");
+        assert_eq!(loaded.personality_summary, profile.personality_summary, "loaded profile personality does not match");
+        assert_eq!(loaded.interaction_style, profile.interaction_style, "loaded profile style does not match");
+        assert_eq!(loaded.topics_of_interest, profile.topics_of_interest, "loaded profile topics do not match");
     }
 
     #[tokio::test]
