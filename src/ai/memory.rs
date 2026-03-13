@@ -358,6 +358,8 @@ mod tests {
     fn get_test_manager() -> DbProfileManager {
         // Mock pool isn't needed for encryption isolated testing, but struct requires it.
         // We can test encrypt/decrypt methods directly if we instantiate with dummy key.
+        // Note: any test making actual DB calls through this pool will fail at runtime
+        // rather than at setup. Given none of the encryption tests use the pool, this is acceptable.
         DbProfileManager {
             pool: sqlx::sqlite::SqlitePoolOptions::new().connect_lazy("sqlite::memory:").unwrap(),
             encryption_key: [1u8; 32],
