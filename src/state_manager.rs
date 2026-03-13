@@ -78,6 +78,7 @@ pub enum StateCommand {
 // The internal state holding struct running in the background task
 struct StateActor {
     history: HashMap<String, VecDeque<Content>>,
+    history_order: VecDeque<String>,               // Tracks access order for LRU eviction
     sequencers: SequencerMap,
     sequencers_order: VecDeque<String>,            // Tracks access order for LRU eviction
     model_preferences: HashMap<String, String>,
@@ -88,11 +89,13 @@ struct StateActor {
 
 const MAX_SENT_MESSAGES: usize = 10_000;
 const MAX_SEQUENCERS: usize = 1_000;
+const MAX_HISTORY_CONTEXTS: usize = 10_000;
 
 impl StateActor {
     fn new(receiver: mpsc::Receiver<StateCommand>) -> Self {
         Self {
             history: HashMap::new(),
+            history_order: VecDeque::new(),
             sequencers: HashMap::new(),
             sequencers_order: VecDeque::new(),
             model_preferences: HashMap::new(),
@@ -102,34 +105,70 @@ impl StateActor {
         }
     }
 
+    fn touch_history(&mut self, context_key: &str) {
+        if self.history.contains_key(context_key) {
+            self.history_order.retain(|x| x != context_key);
+            self.history_order.push_back(context_key.to_string());
+        }
+    }
+
+    fn check_history_capacity(&mut self) {
+        if self.history.len() >= MAX_HISTORY_CONTEXTS {
+            if let Some(oldest) = self.history_order.pop_front() {
+                self.history.remove(&oldest);
+            }
+        }
+    }
+
     async fn run(mut self) {
         while let Some(cmd) = self.receiver.recv().await {
             match cmd {
                 StateCommand::AddUserMessage { context_key, content } => {
+                    if !self.history.contains_key(&context_key) {
+                        self.check_history_capacity();
+                        self.history_order.push_back(context_key.clone());
+                    } else {
+                        self.touch_history(&context_key);
+                    }
                     let chat_history = self.history.entry(context_key).or_insert_with(VecDeque::new);
                     chat_history.push_back(content);
                 }
                 StateCommand::AddModelMessage { context_key, content } => {
+                    if !self.history.contains_key(&context_key) {
+                        self.check_history_capacity();
+                        self.history_order.push_back(context_key.clone());
+                    } else {
+                        self.touch_history(&context_key);
+                    }
                     let chat_history = self.history.entry(context_key).or_insert_with(VecDeque::new);
                     chat_history.push_back(content);
                 }
                 StateCommand::GetHistorySnapshot { context_key, resp } => {
-                    let snapshot = if let Some(hist) = self.history.get(&context_key) {
-                        hist.iter().cloned().collect()
+                    let snapshot = if self.history.contains_key(&context_key) {
+                        self.touch_history(&context_key);
+                        self.history.get(&context_key).unwrap().iter().cloned().collect()
                     } else {
                         Vec::new()
                     };
                     let _ = resp.send(snapshot);
                 }
                 StateCommand::GetHistoryLen { context_key, resp } => {
-                    let len = self.history.get(&context_key).map_or(0, |hist| hist.len());
+                    let len = if self.history.contains_key(&context_key) {
+                        self.touch_history(&context_key);
+                        self.history.get(&context_key).unwrap().len()
+                    } else {
+                        0
+                    };
                     let _ = resp.send(len);
                 }
                 StateCommand::ClearHistory { context_key } => {
                     self.history.remove(&context_key);
+                    self.history_order.retain(|x| x != &context_key);
                 }
                 StateCommand::PruneHistory { context_key, num_messages } => {
-                    if let Some(hist) = self.history.get_mut(&context_key) {
+                    if self.history.contains_key(&context_key) {
+                        self.touch_history(&context_key);
+                        let hist = self.history.get_mut(&context_key).unwrap();
                         for _ in 0..num_messages {
                             if !hist.is_empty() {
                                 hist.pop_front();
@@ -139,7 +178,9 @@ impl StateActor {
                 }
                 StateCommand::GetLastUserPrompt { context_key, resp } => {
                     let mut result = None;
-                    if let Some(hist) = self.history.get(&context_key) {
+                    if self.history.contains_key(&context_key) {
+                        self.touch_history(&context_key);
+                        let hist = self.history.get(&context_key).unwrap();
                         for msg in hist.iter().rev() {
                             if msg.role == "user" {
                                 result = msg.parts.first().and_then(|p| p.text.clone());
