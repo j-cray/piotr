@@ -53,11 +53,11 @@ impl AppConfig {
         // 1 & 2. Read config file and resolve $include directives
         let mut raw_value = Self::load_and_resolve_includes(config_path, 0)?;
 
-        // 3. Apply env entries into process.env before substitution
-        Self::apply_env_injection(&mut raw_value)?;
+        // 3. Collect env entries local to the config before substitution
+        let injected_env = Self::apply_env_injection(&mut raw_value)?;
 
         // 4. Substitute ${VAR} references in string values
-        Self::substitute_env_vars(&mut raw_value)?;
+        Self::substitute_env_vars(&mut raw_value, &injected_env)?;
 
         // 5 & 6 & 7. Apply defaults, validate schema, normalize (done by deserialize)
         let config = config::Config::builder()
@@ -148,7 +148,8 @@ impl AppConfig {
         Ok(())
     }
 
-    fn apply_env_injection(value: &mut Value) -> Result<()> {
+    fn apply_env_injection(value: &mut Value) -> Result<std::collections::HashMap<String, String>> {
+        let mut injected_env = std::collections::HashMap::new();
         if let Some(env_val) = value.get_mut("env") {
             if let Some(env_obj) = env_val.as_object_mut() {
                 // vars map
@@ -156,7 +157,7 @@ impl AppConfig {
                     if let Some(vars_obj) = vars_val.as_object() {
                         for (k, v) in vars_obj {
                             if let Some(s) = v.as_str() {
-                                unsafe { std::env::set_var(k, s) };
+                                injected_env.insert(k.clone(), s.to_string());
                             }
                         }
                     }
@@ -167,7 +168,7 @@ impl AppConfig {
                 for (k, v) in env_obj.iter() {
                     if k != "shellEnv" {
                         if let Some(s) = v.as_str() {
-                            unsafe { std::env::set_var(k, s) };
+                            injected_env.insert(k.clone(), s.to_string());
                             to_remove.push(k.clone());
                         }
                     }
@@ -178,16 +179,16 @@ impl AppConfig {
                 }
             }
         }
-        Ok(())
+        Ok(injected_env)
     }
 
-    fn substitute_env_vars(value: &mut Value) -> Result<()> {
+    fn substitute_env_vars(value: &mut Value, injected_env: &std::collections::HashMap<String, String>) -> Result<()> {
         // Matches $${VAR} as escape or ${VAR} as variable
         let re = Regex::new(r"(?P<escape>\$\$)\{(?P<evar>[A-Z_][A-Z0-9_]*)\}|\$(?P<unescaped>\$)?\{(?P<var>[A-Z_][A-Z0-9_]*)\}").unwrap();
-        Self::substitute_recursive(value, &re)
+        Self::substitute_recursive(value, &re, injected_env)
     }
 
-    fn substitute_recursive(value: &mut Value, re: &Regex) -> Result<()> {
+    fn substitute_recursive(value: &mut Value, re: &Regex, injected_env: &std::collections::HashMap<String, String>) -> Result<()> {
         match value {
             Value::String(s) => {
                 let mut new_string = String::new();
@@ -203,9 +204,13 @@ impl AppConfig {
                         new_string.push_str(&s[m.start() + 1..m.end()]);
                     } else if let Some(var_match) = cap.name("var") {
                         let var_name = var_match.as_str();
-                        match std::env::var(var_name) {
-                            Ok(val) => new_string.push_str(&val),
-                            Err(_) => anyhow::bail!("MissingEnvVarError: {}", var_name),
+                        if let Some(val) = injected_env.get(var_name) {
+                            new_string.push_str(val);
+                        } else {
+                            match std::env::var(var_name) {
+                                Ok(val) => new_string.push_str(&val),
+                                Err(_) => anyhow::bail!("MissingEnvVarError: {}", var_name),
+                            }
                         }
                     }
                     last_end = m.end();
@@ -215,12 +220,12 @@ impl AppConfig {
             }
             Value::Object(map) => {
                 for (_, v) in map.iter_mut() {
-                    Self::substitute_recursive(v, re)?;
+                    Self::substitute_recursive(v, re, injected_env)?;
                 }
             }
             Value::Array(arr) => {
                 for item in arr.iter_mut() {
-                    Self::substitute_recursive(item, re)?;
+                    Self::substitute_recursive(item, re, injected_env)?;
                 }
             }
             _ => {}
@@ -367,12 +372,6 @@ mod tests {
         let dir = tempdir().unwrap();
         let config_path = dir.path().join("env_config.json5");
 
-        // Clear it first to prevent local environment contamination from making it pass by accident
-        unsafe {
-            std::env::remove_var("TEST_SUBST_VAR");
-            std::env::remove_var("ROOT_ENV_VAR");
-        }
-
         let mut file = File::create(&config_path).unwrap();
         write!(file, r#"{{
             env: {{
@@ -390,11 +389,11 @@ mod tests {
         let mut val = AppConfig::load_and_resolve_includes(&config_path, 0).unwrap();
         
         // Apply injection
-        AppConfig::apply_env_injection(&mut val).unwrap();
+        let injected_env = AppConfig::apply_env_injection(&mut val).unwrap();
         
-        // Assert env var is set
-        assert_eq!(std::env::var("TEST_SUBST_VAR").unwrap(), "Hello injected var");
-        assert_eq!(std::env::var("ROOT_ENV_VAR").unwrap(), "Root level injection");
+        // Assert env vars are collected
+        assert_eq!(injected_env.get("TEST_SUBST_VAR").unwrap(), "Hello injected var");
+        assert_eq!(injected_env.get("ROOT_ENV_VAR").unwrap(), "Root level injection");
 
         // Assert they are removed from the JSON tree
         let env_obj = val.get("env").unwrap().as_object().unwrap();
@@ -402,7 +401,7 @@ mod tests {
         assert!(env_obj.get("ROOT_ENV_VAR").is_none());
 
         // Process substitutions
-        AppConfig::substitute_env_vars(&mut val).unwrap();
+        AppConfig::substitute_env_vars(&mut val, &injected_env).unwrap();
         
         let bot_name = val.get("bot").unwrap().as_object().unwrap().get("name").unwrap().as_str().unwrap();
         let bot_persona = val.get("bot").unwrap().as_object().unwrap().get("systemPrompt").unwrap().as_str().unwrap();
@@ -447,8 +446,9 @@ mod tests {
     fn test_missing_env_var_error() {
         let json_str = r#"{ "database": { "url": "${MISSING_DB_URL_12345}" } }"#;
         let mut val: Value = json5::from_str(json_str).unwrap();
+        let injected_env = std::collections::HashMap::new();
 
-        let res = AppConfig::substitute_env_vars(&mut val);
+        let res = AppConfig::substitute_env_vars(&mut val, &injected_env);
         assert!(res.is_err());
         assert!(res.unwrap_err().to_string().contains("MissingEnvVarError: MISSING_DB_URL_12345"));
     }
