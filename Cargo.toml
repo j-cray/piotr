@@ -11,12 +11,9 @@ serde_json = "1.0"
 reqwest = { version = "0.13", features = ["json"] }
 google-cloud-auth = "1.7.0"
 dotenv = "0.15"
-# presage = "0.3.0" # Removed: incorrect crate
-
-# Future proofing deps
 config = "0.15"
-qr_code = "2.0.0" # For linking
-image = "0.25" # For QR code image manipulation if needed
+qr_code = "2.0.0"
+image = "0.25"
 rand = "0.10.0"
 textwrap = "0.16.2"
 base64 = "0.22.1"
