@@ -95,12 +95,13 @@ impl SessionManager {
                 };
 
                 // Explicit triggers
-                let mut is_mentioned = text_lower.contains("@piotr") || text_lower.contains("piotr");
+                let bot_name_lower = self.config.bot.name.to_lowercase();
+                let mut is_mentioned = text_lower.contains(&format!("@{}", bot_name_lower)) || text_lower.contains(&bot_name_lower);
 
                 // Also check native Signal mentions
                 if let Some(mentions) = &data.mentions {
                     for m in mentions {
-                        if m.number.as_deref() == Some(&self.bot_number) || m.name.as_deref().unwrap_or("").to_lowercase().contains("piotr") {
+                        if m.number.as_deref() == Some(&self.bot_number) || m.name.as_deref().unwrap_or("").to_lowercase().contains(&bot_name_lower) {
                             is_mentioned = true;
                             break;
                         }
@@ -184,16 +185,16 @@ impl SessionManager {
     }
 
     async fn handle_help(&self, reply_source: &str, reply_group_id: Option<&str>) {
-         let help_msg = "I am Piotr. I can chat, generate images, and search the web.\n\n\
+         let help_msg = format!("I am {}. I can chat, generate images, and search the web.\n\n\
                         Commands:\n\
                         /reset - Clear our conversation history\n\
                         /model [list|auto|<name>] - Select AI model\n\
                         /help - Show this message\n\n\
                         Triggers:\n\
-                        - Mention 'Piotr' or reply to me in groups.\n\
+                        - Mention '{}' or reply to me in groups.\n\
                         - DM me directly.\n\
-                        - Ask for 'image', 'draw', 'sketch' for images.";
-        if let Err(e) = self.signal_client.send_message(reply_source, reply_group_id, help_msg, None).await {
+                        - Ask for 'image', 'draw', 'sketch' for images.", self.config.bot.name, self.config.bot.name);
+        if let Err(e) = self.signal_client.send_message(reply_source, reply_group_id, &help_msg, None).await {
             warn!("Failed to send help message to {}: {:?}", crate::utils::anonymize(reply_source), e);
         }
     }
@@ -406,7 +407,8 @@ impl SessionManager {
                     // Pre-Processing (Intent & Mention Differentiation)
                     // Differentiate a passing mention from a direct address
                     let prompt_lower = request.prompt.to_lowercase();
-                    let is_mentioned = prompt_lower.contains("piotr") || prompt_lower.contains("@piotr") || prompt_lower.contains("￼");
+                    let bot_name_lower = self_clone_seq.config.bot.name.to_lowercase();
+                    let is_mentioned = prompt_lower.contains(&bot_name_lower) || prompt_lower.contains(&format!("@{}", bot_name_lower)) || prompt_lower.contains("￼");
                     let mut should_abort_generation = false;
 
                     let model_override = state_seq.get_model_preference(&context_key_seq).await;
@@ -426,8 +428,8 @@ impl SessionManager {
                         // Intent Classification (Auto Mode)
                         let mut prompt_to_test = request.prompt.clone();
                         if is_mentioned {
-                            // Let the LLM also decide if this string is talking ABOUT piotr or TO piotr (this helps save tokens/spams if we catch early)
-                            prompt_to_test = format!("SYSTEM: Analyze if the user is talking *to* you or just talking *about* you. Reply IGNORE if they are mentioning you in passing to someone else without expecting a response. If they are addressing you directly (e.g. just '@Piotr' or asking a question), categorize the intent normally as FLASH, SEARCH, PRO, or IMAGE. User prompt: {}", request.prompt);
+                            // Let the LLM also decide if this string is talking ABOUT the bot or TO the bot (this helps save tokens/spams if we catch early)
+                            prompt_to_test = format!("SYSTEM: Analyze if the user is talking *to* you or just talking *about* you. Reply IGNORE if they are mentioning you in passing to someone else without expecting a response. If they are addressing you directly (e.g. just '@{}' or asking a question), categorize the intent normally as FLASH, SEARCH, PRO, or IMAGE. User prompt: {}", self_clone_seq.config.bot.name, request.prompt);
                         }
 
                         let intent = match ai_client_seq.classify_intent(&prompt_to_test).await {
@@ -466,6 +468,7 @@ impl SessionManager {
                              let source_name_clone = request.source_name.clone();
                              let pm = profile_manager_seq.clone();
                              let aic = ai_client_seq.clone();
+                             let bot_name_inner = self_clone_seq.config.bot.name.clone();
 
                              tokio::spawn(async move {
                                  // 1. Update User Profile
@@ -488,7 +491,7 @@ impl SessionManager {
                                      if let Ok(current_group) = pm.get_group_profile(gid, None).await {
                                          // Provide a slightly richer history string for the group context
                                          let user_display = source_name_clone.unwrap_or_else(|| profile_key_clone.clone());
-                                         let history_str = format!("{} (User): {}\nPiotr (Bot): {}", user_display, prompt_clone, text_clone);
+                                         let history_str = format!("{} (User): {}\n{} (Bot): {}", user_display, prompt_clone, bot_name_inner, text_clone);
 
                                          match aic.analyze_group_profile_update(&current_group, &history_str).await {
                                              Ok(updated_group) => {
