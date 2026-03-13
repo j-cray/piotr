@@ -261,27 +261,25 @@ impl DbProfileManager {
     }
 
     pub async fn migrate_json_profiles(&self, data_dir: &str) -> Result<()> {
-        let paths = fs::read_dir(data_dir);
-        if let Ok(entries) = paths {
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    let path = entry.path();
-                    if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                        let content = fs::read_to_string(&path)?;
-                        match serde_json::from_str::<UserProfile>(&content) {
-                            Ok(profile) => {
-                                tracing::info!("Migrating profile for {}", profile.id);
-                                if let Err(e) = self.save_profile(&profile).await {
-                                    tracing::error!("Failed to migrate profile {}: {:?}", profile.id, e);
-                                } else {
-                                    // Rename to .imported
-                                    let new_path = path.with_extension("json.imported");
-                                    let _ = fs::rename(path, new_path);
-                                }
+        let paths = tokio::fs::read_dir(data_dir).await;
+        if let Ok(mut entries) = paths {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                    let content = tokio::fs::read_to_string(&path).await?;
+                    match serde_json::from_str::<UserProfile>(&content) {
+                        Ok(profile) => {
+                            tracing::info!("Migrating profile for {}", profile.id);
+                            if let Err(e) = self.save_profile(&profile).await {
+                                tracing::error!("Failed to migrate profile {}: {:?}", profile.id, e);
+                            } else {
+                                // Rename to .imported
+                                let new_path = path.with_extension("json.imported");
+                                let _ = tokio::fs::rename(path, new_path).await;
                             }
-                            Err(e) => {
-                                tracing::error!("Failed to parse profile {:?}: {:?}", path, e);
-                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to parse profile {:?}: {:?}", path, e);
                         }
                     }
                 }
