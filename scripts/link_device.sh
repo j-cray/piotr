@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
 # This script runs signal-cli link, captures the tsdevice URI,
 # generates a QR code, and keeps signal-cli running.
