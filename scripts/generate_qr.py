@@ -12,10 +12,7 @@ def print_qr(data):
     qr.add_data(data)
     qr.make(fit=True)
 
-    f = io.StringIO()
-    qr.print_ascii(out=f)
-    f.seek(0)
-    print(f.read())
+    qr.print_ascii()
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
