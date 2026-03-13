@@ -19,16 +19,16 @@
 
   // security: {
   //   // Substitute from environment: Generate 32-byte hex strings via `openssl rand -hex 32`
-  //   profile_encryption_key: "${PIOTR_PROFILE_ENCRYPTION_KEY}",
-  //   anonymize_key: "${PIOTR_ANONYMIZE_KEY}",
+  //   profileEncryptionKey: "${PIOTR_PROFILE_ENCRYPTION_KEY}",
+  //   anonymizeKey: "${PIOTR_ANONYMIZE_KEY}",
   // },
 
   // ai: {
   //   // Example substituting the value injected in the env block above
-  //   gcp_project_id: "${PIOTR_GCP_PROJECT_ID}",
+  //   gcpProjectId: "${PIOTR_GCP_PROJECT_ID}",
   //
   //   // The primary region for Vertex AI endpoints
-  //   gcp_location: "us-central1",
+  //   gcpLocation: "us-central1",
   //
   //   models: {
   //     // Used for conversational responses (PRO intent)
@@ -41,28 +41,28 @@
   //
   //   generation: {
   //     temperature: 0.5,
-  //     max_output_tokens: 8192,
+  //     maxOutputTokens: 8192,
   //   },
   // },
 
   // signal: {
-  //   // Optional: If not provided, Piotr will attempt to auto-detect from data_path/accounts.json
-  //   phone_number: null,
+  //   // Optional: If not provided, Piotr will attempt to auto-detect from dataPath/accounts.json
+  //   phoneNumber: null,
   //   // Path where signal-cli state is stored
-  //   data_path: "data/signal-cli",
+  //   dataPath: "data/signal-cli",
   // },
 
   // performance: {
-  //   max_concurrent_requests: 10,
-  //   message_processing_timeout_secs: 30,
+  //   maxConcurrentRequests: 10,
+  //   messageProcessingTimeoutSecs: 30,
   //   // Delay between concurrent Vertex AI API calls to avoid rate limits
-  //   api_cooldown_ms: 1500,
+  //   apiCooldownMs: 1500,
   // },
 
   // bot: {
   //   name: "Piotr",
   //   location: "Unknown",
-  //   persona: "Helpful and witty AI assistant",
-  //   target_message_length_chars: 1000,
+  //   systemPrompt: "Helpful and witty AI assistant",
+  //   targetMessageLengthChars: 1000,
   // },
 }

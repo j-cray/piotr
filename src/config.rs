@@ -2,6 +2,7 @@ use serde::Deserialize;
 use anyhow::Result;
 
 #[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct AppConfig {
     pub database: DatabaseConfig,
     pub security: SecurityConfig,
@@ -229,17 +230,20 @@ impl AppConfig {
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct DatabaseConfig {
     pub url: String,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct SecurityConfig {
     pub profile_encryption_key: String,
     pub anonymize_key: String,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct AiConfig {
     pub gcp_project_id: String,
     pub gcp_location: String,
@@ -248,6 +252,7 @@ pub struct AiConfig {
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct AiModelsConfig {
     pub chat: String,
     pub classification: String,
@@ -255,18 +260,21 @@ pub struct AiModelsConfig {
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct AiGenerationConfig {
     pub temperature: f32,
     pub max_output_tokens: i32,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct SignalConfig {
     pub phone_number: Option<String>,
     pub data_path: String,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct PerformanceConfig {
     pub max_concurrent_requests: usize,
     pub message_processing_timeout_secs: u64,
@@ -274,10 +282,11 @@ pub struct PerformanceConfig {
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct BotConfig {
     pub name: String,
     pub location: String,
-    pub persona: String,
+    pub system_prompt: String,
     pub target_message_length_chars: usize,
 }
 
@@ -293,16 +302,16 @@ mod tests {
         let json5_str = r#"
         {
             database: { url: "sqlite://test.db" },
-            security: { profile_encryption_key: "abc", anonymize_key: "def" },
+            security: { profileEncryptionKey: "abc", anonymizeKey: "def" },
             ai: {
-                gcp_project_id: "test-proj",
-                gcp_location: "us-west1",
+                gcpProjectId: "test-proj",
+                gcpLocation: "us-west1",
                 models: { chat: "m1", classification: "m2", imagen: "m3" },
-                generation: { temperature: 0.7, max_output_tokens: 100 }
+                generation: { temperature: 0.7, maxOutputTokens: 100 }
             },
-            signal: { data_path: "/tmp/signal", phone_number: "+1234567890" },
-            performance: { max_concurrent_requests: 5, message_processing_timeout_secs: 10, api_cooldown_ms: 500 },
-            bot: { name: "TestBot", location: "Earth", persona: "Tester", target_message_length_chars: 500 }
+            signal: { dataPath: "/tmp/signal", phoneNumber: "+1234567890" },
+            performance: { maxConcurrentRequests: 5, messageProcessingTimeoutSecs: 10, apiCooldownMs: 500 },
+            bot: { name: "TestBot", location: "Earth", systemPrompt: "Tester", targetMessageLengthChars: 500 }
         }
         "#;
 
@@ -331,7 +340,7 @@ mod tests {
         let root_path = dir.path().join("root.json5");
 
         let mut base_file = File::create(&base_path).unwrap();
-        write!(base_file, r#"{{ bot: {{ name: "BaseBot", location: "BaseLoc" }}, performance: {{ max_concurrent_requests: 1 }} }}"#).unwrap();
+        write!(base_file, r#"{{ bot: {{ name: "BaseBot", location: "BaseLoc" }}, performance: {{ maxConcurrentRequests: 1 }} }}"#).unwrap();
 
         let mut root_file = File::create(&root_path).unwrap();
         write!(root_file, r#"{{ $include: "./base.json5", bot: {{ location: "RootLoc" }} }}"#).unwrap();
@@ -344,7 +353,7 @@ mod tests {
         assert_eq!(bot_obj.get("location").unwrap().as_str().unwrap(), "RootLoc");
 
         let perf_obj = val.get("performance").unwrap().as_object().unwrap();
-        assert_eq!(perf_obj.get("max_concurrent_requests").unwrap().as_u64().unwrap(), 1);
+        assert_eq!(perf_obj.get("maxConcurrentRequests").unwrap().as_u64().unwrap(), 1);
     }
 
     #[test]
@@ -368,7 +377,7 @@ mod tests {
             }},
             bot: {{
                 name: "${{TEST_SUBST_VAR}}",
-                persona: "Look at $${{ESCAPED_VAR}}"
+                systemPrompt: "Look at $${{ESCAPED_VAR}}"
             }}
         }}"#).unwrap();
 
@@ -390,7 +399,7 @@ mod tests {
         AppConfig::substitute_env_vars(&mut val).unwrap();
         
         let bot_name = val.get("bot").unwrap().as_object().unwrap().get("name").unwrap().as_str().unwrap();
-        let bot_persona = val.get("bot").unwrap().as_object().unwrap().get("persona").unwrap().as_str().unwrap();
+        let bot_persona = val.get("bot").unwrap().as_object().unwrap().get("systemPrompt").unwrap().as_str().unwrap();
 
         assert_eq!(bot_name, "Hello injected var");
         // Ensure escaping works
@@ -405,7 +414,7 @@ mod tests {
         let root = dir.path().join("root.json5");
 
         let mut f1 = File::create(&common1).unwrap();
-        write!(f1, r#"{{ ai: {{ gcp_location: "europe-west4" }} }}"#).unwrap();
+        write!(f1, r#"{{ ai: {{ gcpLocation: "europe-west4" }} }}"#).unwrap();
 
         let mut f2 = File::create(&common2).unwrap();
         write!(f2, r#"{{ bot: {{ location: "ArrayBot" }} }}"#).unwrap();
@@ -416,7 +425,7 @@ mod tests {
         let val = AppConfig::load_and_resolve_includes(&root, 0).unwrap();
         
         // Assert array includes merged correctly
-        assert_eq!(val.get("ai").unwrap().as_object().unwrap().get("gcp_location").unwrap().as_str().unwrap(), "europe-west4");
+        assert_eq!(val.get("ai").unwrap().as_object().unwrap().get("gcpLocation").unwrap().as_str().unwrap(), "europe-west4");
         assert_eq!(val.get("bot").unwrap().as_object().unwrap().get("location").unwrap().as_str().unwrap(), "ArrayBot");
 
         // Test max depth
