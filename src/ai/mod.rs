@@ -264,9 +264,10 @@ impl VertexClient {
     }
 
     pub async fn generate_image(&self, prompt: &str, model: &str) -> Result<Vec<u8>> {
+        let location = std::env::var("GCP_LOCATION").unwrap_or_else(|_| "us-central1".to_string());
         let url = format!(
-            "https://us-central1-aiplatform.googleapis.com/v1/projects/{}/locations/{}/publishers/google/models/{}:predict",
-            self.project_id, "us-central1", model
+            "https://{}-aiplatform.googleapis.com/v1/projects/{}/locations/{}/publishers/google/models/{}:predict",
+            location, self.project_id, location, model
         );
 
         let body = json!({
