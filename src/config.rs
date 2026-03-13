@@ -84,6 +84,17 @@ impl AppConfig {
             .build()?;
 
         let app_config: AppConfig = config.try_deserialize()?;
+
+        #[cfg(not(debug_assertions))]
+        {
+            if app_config.security.profile_encryption_key.is_empty() {
+                anyhow::bail!("SECURITY ERROR: profileEncryptionKey is empty in a release build! This would cause profiles to be weakly encrypted.");
+            }
+            if app_config.security.anonymize_key.is_empty() {
+                anyhow::bail!("SECURITY ERROR: anonymizeKey is empty in a release build! This would cause log anonymization to fail or be weakly encrypted.");
+            }
+        }
+
         Ok(app_config)
     }
 
