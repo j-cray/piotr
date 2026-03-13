@@ -272,7 +272,7 @@ impl SignalClient {
 
     pub async fn send_typing(&self, recipient: &str, group_id: Option<&str>) -> Result<()> {
         let params = if let Some(gid) = group_id {
-            json!({ "groupId": [gid] })
+            json!({ "groupId": gid })
         } else {
             json!({ "recipient": [recipient] })
         };
@@ -289,7 +289,7 @@ impl SignalClient {
 
     pub async fn stop_typing(&self, recipient: &str, group_id: Option<&str>) -> Result<()> {
         let params = if let Some(gid) = group_id {
-            json!({ "groupId": [gid], "stop": true })
+            json!({ "groupId": gid, "stop": true })
         } else {
             json!({ "recipient": [recipient], "stop": true })
         };
@@ -429,6 +429,22 @@ mod tests {
         // Test normal format matches signal-cli specification structurally
         assert_eq!(params["recipient"][0], "+1234567890");
         assert_eq!(params["message"], "Hello");
+    }
+
+    #[test]
+    fn test_serialization_typing_group() {
+        // Assert that groupId is constructed as a string, matching signal-cli's expected type
+        let group_id = "some_base64_group_id_string=";
+
+        let send_params = serde_json::json!({ "groupId": group_id });
+        let stop_params = serde_json::json!({ "groupId": group_id, "stop": true });
+
+        assert!(send_params["groupId"].is_string());
+        assert_eq!(send_params["groupId"], group_id);
+
+        assert!(stop_params["groupId"].is_string());
+        assert_eq!(stop_params["groupId"], group_id);
+        assert_eq!(stop_params["stop"], true);
     }
 
     #[test]
