@@ -382,4 +382,45 @@ mod tests {
         // Ensure escaping works
         assert_eq!(bot_persona, "Look at ${ESCAPED_VAR}");
     }
+
+    #[test]
+    fn test_include_array_and_max_depth() {
+        let dir = tempdir().unwrap();
+        let common1 = dir.path().join("common1.json5");
+        let common2 = dir.path().join("common2.json5");
+        let root = dir.path().join("root.json5");
+
+        let mut f1 = File::create(&common1).unwrap();
+        write!(f1, r#"{{ ai: {{ gcp_location: "europe-west4" }} }}"#).unwrap();
+
+        let mut f2 = File::create(&common2).unwrap();
+        write!(f2, r#"{{ bot: {{ location: "ArrayBot" }} }}"#).unwrap();
+
+        let mut f_root = File::create(&root).unwrap();
+        write!(f_root, r#"{{ $include: ["./common1.json5", "./common2.json5"] }}"#).unwrap();
+
+        let val = AppConfig::load_and_resolve_includes(&root, 0).unwrap();
+        
+        // Assert array includes merged correctly
+        assert_eq!(val.get("ai").unwrap().as_object().unwrap().get("gcp_location").unwrap().as_str().unwrap(), "europe-west4");
+        assert_eq!(val.get("bot").unwrap().as_object().unwrap().get("location").unwrap().as_str().unwrap(), "ArrayBot");
+
+        // Test max depth
+        let mut loop_file = File::create(dir.path().join("loop.json5")).unwrap();
+        write!(loop_file, r#"{{ $include: "./loop.json5" }}"#).unwrap();
+
+        let res = AppConfig::load_and_resolve_includes(&dir.path().join("loop.json5"), 0);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("Max Depth"));
+    }
+
+    #[test]
+    fn test_missing_env_var_error() {
+        let json_str = r#"{ "database": { "url": "${MISSING_DB_URL_12345}" } }"#;
+        let mut val: Value = json5::from_str(json_str).unwrap();
+
+        let res = AppConfig::substitute_env_vars(&mut val);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("MissingEnvVarError: MISSING_DB_URL_12345"));
+    }
 }
