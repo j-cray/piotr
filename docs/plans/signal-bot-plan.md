@@ -2,7 +2,8 @@
 
 ## 1. Overview
 This project aims to build a Rust-based Signal Messenger bot that leverages Google Cloud Vertex AI (Gemini models) to process messages and generate intelligent responses. The bot will manage conversation context, interface with Signal via a secure bridge, and use GCP services for AI inference.
-**GCP Project ID:** `piotr-487123`
+**GCP Project ID:** `<GCP_PROJECT_ID>`
+
 
 ## 2. Phases
 
