@@ -4,7 +4,7 @@ use tokio::sync::Mutex;
 use std::fs;
 use anyhow::{Result, Context};
 use crate::ai::ReactionAnalysis;
-use sqlx::PgPool;
+use sqlx::SqlitePool;
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
     XChaCha20Poly1305, XNonce
@@ -98,12 +98,12 @@ pub struct GroupProfile {
 
 #[derive(Clone)]
 pub struct DbProfileManager {
-    pool: PgPool,
+    pool: SqlitePool,
     encryption_key: [u8; 32],
 }
 
 impl DbProfileManager {
-    pub fn new(pool: PgPool, key_hex: &str) -> Result<Self> {
+    pub fn new(pool: SqlitePool, key_hex: &str) -> Result<Self> {
         let key_bytes = hex::decode(key_hex).context("Failed to decode PROFILE_ENCRYPTION_KEY hex")?;
         if key_bytes.len() != 32 {
             anyhow::bail!("PROFILE_ENCRYPTION_KEY must be 32 bytes (64 hex chars)");
@@ -359,7 +359,7 @@ mod tests {
         // Mock pool isn't needed for encryption isolated testing, but struct requires it.
         // We can test encrypt/decrypt methods directly if we instantiate with dummy key.
         DbProfileManager {
-            pool: sqlx::postgres::PgPoolOptions::new().connect_lazy("postgres://dummy").unwrap(),
+            pool: sqlx::sqlite::SqlitePoolOptions::new().connect_lazy("sqlite::memory:").unwrap(),
             encryption_key: [1u8; 32],
         }
     }
