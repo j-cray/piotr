@@ -2,6 +2,8 @@ use sqlx::sqlite::{SqlitePool, SqlitePoolOptions, SqliteConnectOptions};
 use anyhow::Result;
 use tracing::info;
 use std::str::FromStr;
+use std::fs;
+use std::path::Path;
 
 pub struct Database {
     pub pool: SqlitePool,
@@ -9,6 +11,21 @@ pub struct Database {
 
 impl Database {
     pub async fn new(database_url: &str) -> Result<Self> {
+        // For file-based SQLite URLs (e.g., "sqlite://data/piotr.db"), ensure
+        // the parent directory exists before attempting to create/open the DB.
+        if let Some(path_str) = database_url.strip_prefix("sqlite://") {
+            // Ignore in-memory and other non-file special cases that would not
+            // correspond to a filesystem path.
+            if !path_str.is_empty() && !path_str.starts_with(':') {
+                let path = Path::new(path_str);
+                if let Some(parent) = path.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        fs::create_dir_all(parent)?;
+                    }
+                }
+            }
+        }
+
         let options = SqliteConnectOptions::from_str(database_url)?
             .create_if_missing(true);
 
