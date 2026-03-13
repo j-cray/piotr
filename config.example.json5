@@ -53,7 +53,7 @@
   // },
 
   // signal: {
-  //   // Optional: If not provided, Piotr will attempt to auto-detect from dataPath/accounts.json
+  //   // Optional: If not provided, Piotr will attempt to auto-detect from dataPath/data/accounts.json (under config.signal.data_path)
   //   phoneNumber: null,
   //   // Path where signal-cli state is stored
   //   dataPath: "data/signal-cli",
