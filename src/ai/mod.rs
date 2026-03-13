@@ -975,4 +975,27 @@ mod tests {
         let final_intent = text.trim().to_uppercase();
         assert_eq!(final_intent, "FLASH");
     }
+
+    #[tokio::test]
+    async fn test_rate_limiters_independence() {
+        let client = VertexClient::new("fake_project");
+
+        // First call should be instant (since new() sets them to 2 secs in the past)
+        let start = Instant::now();
+        client.wait_for_rate_limit(EndpointType::GenerateContent).await;
+        
+        // Second call to same endpoint should take ~1.5 seconds
+        client.wait_for_rate_limit(EndpointType::GenerateContent).await;
+        let elapsed = start.elapsed();
+        
+        // Use a generous upper bound for CI environments
+        assert!(elapsed >= Duration::from_millis(1400), "Should wait for rate limit");
+        assert!(elapsed < Duration::from_millis(3000), "Should not wait excessively");
+
+        // Call to a different endpoint should be instant because they are independent
+        let start2 = Instant::now();
+        client.wait_for_rate_limit(EndpointType::ClassifyIntent).await;
+        let elapsed2 = start2.elapsed();
+        assert!(elapsed2 < Duration::from_millis(100), "Independent endpoint should not be blocked");
+    }
 }
