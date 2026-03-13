@@ -67,9 +67,9 @@ impl Memory {
         sorted.into_iter().take(limit).collect()
     }
 
-    fn save(&self, interactions: &[Interaction]) -> Result<()> {
+    async fn save(&self, interactions: &[Interaction]) -> Result<()> {
         let json = serde_json::to_string_pretty(interactions)?;
-        fs::write(&self.file_path, json)?;
+        tokio::fs::write(&self.file_path, json).await?;
         Ok(())
     }
 }
