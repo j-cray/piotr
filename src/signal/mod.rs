@@ -118,6 +118,26 @@ pub struct SignalClient {
     user_phone: String,
     tx: mpsc::Sender<Value>,
     next_request_id: Arc<AtomicUsize>,
+    #[allow(dead_code)]
+    process_guard: Arc<SignalProcessGuard>,
+}
+
+struct SignalProcessGuard {
+    child: std::sync::Mutex<Option<tokio::process::Child>>,
+}
+
+impl Drop for SignalProcessGuard {
+    fn drop(&mut self) {
+        if let Ok(mut lock) = self.child.lock() {
+            if let Some(child) = lock.as_mut() {
+                if let Err(e) = child.start_kill() {
+                    tracing::warn!("Failed to kill signal-cli child process: {}", e);
+                } else {
+                    tracing::info!("Sent kill signal to signal-cli process");
+                }
+            }
+        }
+    }
 }
 
 impl SignalClient {
@@ -135,6 +155,9 @@ impl SignalClient {
             user_phone: "dummy".to_string(),
             tx,
             next_request_id: Arc::new(AtomicUsize::new(1)),
+            process_guard: Arc::new(SignalProcessGuard {
+                child: std::sync::Mutex::new(None),
+            }),
         }
     }
 
@@ -188,6 +211,11 @@ impl SignalClient {
             }
         });
 
+        let process_guard = Arc::new(SignalProcessGuard {
+            child: std::sync::Mutex::new(Some(child)),
+        });
+        let process_guard_clone = process_guard.clone();
+
         // Stdout reader task
         tokio::spawn(async move {
             let reader = BufReader::new(stdout);
@@ -216,13 +244,17 @@ impl SignalClient {
                 }
             }
             info!("Signal listener loop ended");
-            let _ = child.wait().await; // Wait for child process to exit completely
+            let child_opt = process_guard_clone.child.lock().unwrap().take();
+            if let Some(mut child) = child_opt {
+                let _ = child.wait().await; // Wait for child process to exit completely
+            }
         });
 
         Ok((Self {
             user_phone: user_phone.to_string(),
             tx: tx_in,
             next_request_id: Arc::new(AtomicUsize::new(1)),
+            process_guard,
         }, rx_out))
     }
 
