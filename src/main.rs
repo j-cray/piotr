@@ -34,8 +34,9 @@ async fn main() -> anyhow::Result<()> {
     let signal_phone = match &config.signal.phone_number {
         Some(num) => num.clone(),
         None => {
-            let accounts_json = std::fs::read_to_string(format!("{}/accounts.json", config.signal.data_path))
-                .context(format!("Failed to read {}/accounts.json - did you run the linking script?", config.signal.data_path))?;
+            let accounts_path = std::path::PathBuf::from(&config.signal.data_path).join("data").join("accounts.json");
+            let accounts_json = std::fs::read_to_string(&accounts_path)
+                .context(format!("Failed to read {} - did you run the linking script?", accounts_path.display()))?;
             let accounts: serde_json::Value = serde_json::from_str(&accounts_json)
                 .context("accounts.json is not valid JSON")?;
             accounts["accounts"]
