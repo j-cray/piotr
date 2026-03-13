@@ -1,0 +1,61 @@
+{
+  // Piotr Application Configuration Example
+  // Copy this file to ~/.config/piotr/config.json5 and uncomment/modify values as needed.
+
+  // database: {
+  //   // Note: Can be overridden by PIOTR__DATABASE__URL
+  //   url: "sqlite://data/piotr.db",
+  // },
+
+  // security: {
+  //   // IMPORTANT: Generate a secure 32-byte key for both of these, e.g. using `openssl rand -hex 32`
+  //   // Can be overridden by PIOTR__SECURITY__PROFILE_ENCRYPTION_KEY
+  //   profile_encryption_key: "CHANGEME_32_BYTE_HEX_STRING_HERE",
+  //
+  //   // Can be overridden by PIOTR__SECURITY__ANONYMIZE_KEY
+  //   anonymize_key: "CHANGEME_32_BYTE_HEX_STRING_HERE",
+  // },
+
+  // ai: {
+  //   // Your Google Cloud Project ID that has Vertex AI enabled
+  //   gcp_project_id: "your-gcp-project-id",
+  //
+  //   // The primary region for Vertex AI endpoints
+  //   gcp_location: "us-central1",
+  //
+  //   models: {
+  //     // Used for conversational responses (PRO intent)
+  //     chat: "gemini-3-pro-preview",
+  //     // Used for quick/general responses and intent classification
+  //     classification: "gemini-3-flash-preview",
+  //     // Used for image generation
+  //     imagen: "imagen-3.0-generate-001",
+  //   },
+  //
+  //   generation: {
+  //     temperature: 0.5,
+  //     max_output_tokens: 8192,
+  //   },
+  // },
+
+  // signal: {
+  //   // Optional: If not provided, Piotr will attempt to auto-detect from data_path/accounts.json
+  //   phone_number: null,
+  //   // Path where signal-cli state is stored
+  //   data_path: "data/signal-cli",
+  // },
+
+  // performance: {
+  //   max_concurrent_requests: 10,
+  //   message_processing_timeout_secs: 30,
+  //   // Delay between concurrent Vertex AI API calls to avoid rate limits
+  //   api_cooldown_ms: 1500,
+  // },
+
+  // bot: {
+  //   name: "Piotr",
+  //   location: "Unknown",
+  //   persona: "Helpful and witty AI assistant",
+  //   target_message_length_chars: 1000,
+  // },
+}

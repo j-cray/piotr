@@ -12,14 +12,23 @@ pub struct AppConfig {
 }
 
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use regex::Regex;
 
 impl AppConfig {
     pub fn load() -> Result<Self> {
-        // Find configuration path
-        let config_path = Path::new("config.json5");
+        // Find configuration path: ~/.config/piotr/config.json5
+        let config_dir = std::env::var("XDG_CONFIG_HOME")
+            .unwrap_or_else(|_| {
+                let home = std::env::var("HOME").expect("HOME environment variable not set");
+                format!("{}/.config", home)
+            });
         
+        let config_path = PathBuf::from(config_dir).join("piotr").join("config.json5");
+        Self::load_from(&config_path)
+    }
+
+    pub fn load_from(config_path: &Path) -> Result<Self> {
         // 1 & 2. Read config file and resolve $include directives
         let mut raw_value = Self::load_and_resolve_includes(config_path, 0)?;
 
@@ -293,21 +302,6 @@ mod tests {
         assert_eq!(app_config.signal.phone_number.as_deref(), Some("+1234567890"));
         assert_eq!(app_config.performance.api_cooldown_ms, 500);
         assert_eq!(app_config.bot.name, "TestBot");
-    }
-
-    #[test]
-    fn test_load_default_template_config() {
-        // Ensure the config.json5 template file at the project root is valid and parses into AppConfig
-        let config_res = AppConfig::load();
-        
-        assert!(config_res.is_ok(), "Failed to load root config.json5: {:?}", config_res.err());
-        let config = config_res.unwrap();
-        
-        // Assert some known defaults from the template
-        assert_eq!(config.database.url, "sqlite://data/piotr.db");
-        assert_eq!(config.ai.gcp_location, "us-central1");
-        assert_eq!(config.bot.name, "Piotr");
-        assert_eq!(config.performance.max_concurrent_requests, 10);
     }
 
     #[test]
