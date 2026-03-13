@@ -167,8 +167,9 @@ impl VertexClient {
         let mut last = mutex.lock().await;
         let now = Instant::now();
         let elapsed = now.duration_since(*last);
-        if elapsed < Duration::from_millis(1500) {
-            let wait = Duration::from_millis(1500) - elapsed;
+        let cooldown = Duration::from_millis(self.config.performance.api_cooldown_ms);
+        if elapsed < cooldown {
+            let wait = cooldown - elapsed;
             tokio::time::sleep(wait).await;
         }
         *last = Instant::now();
@@ -1015,5 +1016,24 @@ mod tests {
         client.wait_for_rate_limit(EndpointType::ClassifyIntent).await;
         let elapsed2 = start2.elapsed();
         assert!(elapsed2 < Duration::from_millis(100), "Independent endpoint should not be blocked");
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_cooldown_config() {
+        let mut config_data = crate::config::AppConfig::default();
+        config_data.performance.api_cooldown_ms = 300; // Custom cooldown
+        let config = std::sync::Arc::new(config_data);
+        let client = VertexClient::new(config);
+
+        // First call should be instant
+        let start = Instant::now();
+        client.wait_for_rate_limit(EndpointType::GenerateContent).await;
+        
+        // Second call should wait ~300ms
+        client.wait_for_rate_limit(EndpointType::GenerateContent).await;
+        let elapsed = start.elapsed();
+        
+        assert!(elapsed >= Duration::from_millis(250), "Should wait according to config cooldown");
+        assert!(elapsed < Duration::from_millis(1000), "Should not wait excessively");
     }
 }
