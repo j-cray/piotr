@@ -35,12 +35,11 @@ impl AppConfig {
     pub fn load() -> Result<Self> {
         let local_config = Path::new("config.json5");
         
-        let config_dir = std::env::var("XDG_CONFIG_HOME")
-            .unwrap_or_else(|_| {
-                let home = std::env::var("HOME").expect("HOME environment variable not set");
-                format!("{}/.config", home)
-            });
-        let fallback_config = PathBuf::from(config_dir).join("piotr").join("config.json5");
+        use etcetera::base_strategy::{BaseStrategy, choose_base_strategy};
+
+        let strategy = choose_base_strategy()
+            .expect("Failed to determine system configuration directory strategy");
+        let fallback_config = strategy.config_dir().join("piotr").join("config.json5");
 
         let config_path = if local_config.exists() {
             PathBuf::from(local_config)
