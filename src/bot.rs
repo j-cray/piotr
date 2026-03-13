@@ -73,21 +73,7 @@ impl SessionManager {
 
                 let text_lower = text.trim().to_lowercase();
 
-                // 2. Check for Commands
-                if text_lower == "/reset" {
-                    self.handle_reset(&context_key, &source, group_id.as_deref()).await;
-                    return;
-                }
-                if text_lower == "/help" {
-                    self.handle_help(&source, group_id.as_deref()).await;
-                    return;
-                }
-                if text_lower.starts_with("/model") {
-                    self.handle_model(&context_key, &source, group_id.as_deref(), &text).await;
-                    return;
-                }
-
-                // 3. Determine if we should reply
+                // 2. Determine if we should reply
                 let is_quote_reply = if let Some(quote) = &data.quote {
                     quote.author == self.bot_number
                 } else {
@@ -174,59 +160,6 @@ impl SessionManager {
                      }
                 }
             }
-        }
-    }
-
-    async fn handle_reset(&self, context_key: &str, reply_source: &str, reply_group_id: Option<&str>) {
-        self.state.clear_history(context_key).await;
-        if let Err(e) = self.signal_client.send_message(reply_source, reply_group_id, "Conversation history cleared.", None).await {
-            warn!("Failed to send reset confirmation to {}: {:?}", crate::utils::anonymize(reply_source), e);
-        }
-    }
-
-    async fn handle_help(&self, reply_source: &str, reply_group_id: Option<&str>) {
-         let help_msg = format!("I am {}. I can chat, generate images, and search the web.\n\n\
-                        Commands:\n\
-                        /reset - Clear our conversation history\n\
-                        /model [list|auto|<name>] - Select AI model\n\
-                        /help - Show this message\n\n\
-                        Triggers:\n\
-                        - Mention '{}' or reply to me in groups.\n\
-                        - DM me directly.\n\
-                        - Ask for 'image', 'draw', 'sketch' for images.", self.config.bot.name, self.config.bot.name);
-        if let Err(e) = self.signal_client.send_message(reply_source, reply_group_id, &help_msg, None).await {
-            warn!("Failed to send help message to {}: {:?}", crate::utils::anonymize(reply_source), e);
-        }
-    }
-
-    async fn handle_model(&self, context_key: &str, reply_source: &str, reply_group_id: Option<&str>, command_text: &str) {
-        let parts: Vec<&str> = command_text.split_whitespace().collect();
-        let arg = parts.get(1).map(|s| s.to_lowercase());
-
-        let response = match arg.as_deref() {
-            Some("list") => {
-                "Available Models:\n\
-                 - auto (Default/Smart Intent)\n\
-                 - gemini-3-flash-preview (Fast)\n\
-                 - gemini-3-pro-preview (Smart)\n\
-                 - imagen-3.0-generate-001 (Images)".to_string()
-            },
-            Some("auto") => {
-                self.state.remove_model_preference(context_key).await;
-                "Model set to AUTO (I will decide best model based on intent).".to_string()
-            },
-            Some(model) => {
-                self.state.set_model_preference(context_key, model).await;
-                format!("Model set to: {}. I will use this for all text responses.", model)
-            },
-            None => {
-                 let current = self.state.get_model_preference(context_key).await.unwrap_or_else(|| "auto".to_string());
-                 format!("Current model: {}. Use '/model list' to see options.", current)
-            }
-        };
-
-        if let Err(e) = self.signal_client.send_message(reply_source, reply_group_id, &response, None).await {
-            warn!("Failed to send model response to {}: {:?}", crate::utils::anonymize(reply_source), e);
         }
     }
 
@@ -645,45 +578,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_handle_model_parsing_variations() {
-        // We can test the parsing logic of handle_model by passing weird command strings
-        // Though handle_model modifies state, we can just ensure it doesn't panic on massive input
-
-        let db_pool = sqlx::postgres::PgPoolOptions::new().connect_lazy("postgres://dummy").unwrap();
-        let profile_manager = DbProfileManager::new(db_pool, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").unwrap();
-        // To build a SessionManager, we need dummy clients
-        // Because of the struct dependencies and `reqwest` inside VertexClient etc,
-        // creating a full SessionManager just to test command parsing is heavy,
-        // but it proves the system doesn't crash on injection.
-        // SignalClient::new returns a Result<(SignalClient, Receiver)>
-        let signal_client = SignalClient::new_dummy();
-        let config = std::sync::Arc::new(crate::config::AppConfig::default());
-        let ai_client = VertexClient::new(config.clone());
-
-        let manager = SessionManager::new(signal_client, ai_client, "dummy".to_string(), profile_manager, config);
-        let ctx = "test_context";
-
-        // 1. Valid commands
-        manager.handle_model(ctx, "source", None, "/model list").await;
-        manager.handle_model(ctx, "source", None, "/model auto").await;
-
-        // 2. Missing arg
-        manager.handle_model(ctx, "source", None, "/model").await;
-
-        // 3. Adversarial / extremely long injection attempt
-        let mut massive_command = String::from("/model ");
-        for _ in 0..5000 {
-            massive_command.push_str("DROP TABLE users; ");
-        }
-
-        // It should just treat the first 5000 words as the "arg" and set preference, or break safely
-        manager.handle_model(ctx, "source", None, &massive_command).await;
-
-        // Verify state is tracking what we expect, no panic
-        let pref = manager.state.get_model_preference(ctx).await;
-        assert!(pref.is_some());
-    }
 
 
     #[test]
