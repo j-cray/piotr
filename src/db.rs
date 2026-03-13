@@ -41,6 +41,10 @@ mod tests {
 
         let db = db_result.unwrap();
 
+        // With an in-memory database, we can and should test the migrations.
+        let migration_result = db.run_migrations().await;
+        assert!(migration_result.is_ok(), "Failed to run migrations: {:?}", migration_result.err());
+
         assert!(!db.pool.is_closed(), "Database pool should not be closed");
     }
 
