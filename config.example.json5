@@ -1,0 +1,75 @@
+{
+  // Piotr Application Configuration Example
+  // Copy this file to ~/.config/piotr/config.json5 and uncomment/modify values as needed.
+
+  // Optional: Define environment variables inline or load them from your system.
+  // env: {
+  //   vars: {
+  //     // IMPORTANT: It's recommended to set PIOTR_PROFILE_ENCRYPTION_KEY and PIOTR_ANONYMIZE_KEY 
+  //     // in your actual system environment instead of here to prevent checking secrets into Git.
+  //     //
+  //     // Example setting a GCP project ID to be substituted later:
+  //     PIOTR_GCP_PROJECT_ID: "your-gcp-project-id"
+  //   }
+  // },
+
+  // database: {
+  //   url: "sqlite://data/piotr.db",
+  // },
+
+  // security: {
+  //   // Substitute from environment: Generate 32-byte hex strings via `openssl rand -hex 32`
+  //   profileEncryptionKey: "${PIOTR_PROFILE_ENCRYPTION_KEY}",
+  //   anonymizeKey: "${PIOTR_ANONYMIZE_KEY}",
+  // },
+
+  // ai: {
+  //   // Example substituting the value injected in the env block above
+  //   gcpProjectId: "${PIOTR_GCP_PROJECT_ID}",
+  //
+  //   // The primary region for Vertex AI endpoints
+  //   gcpLocation: "us-central1",
+  //
+  //   models: {
+  //     // Used for conversational responses (PRO intent)
+  //     chat: {
+  //       name: "gemini-3-pro-preview",
+  //       temperature: 0.5,
+  //       maxOutputTokens: 8192,
+  //       maxInputTokens: 1000000,
+  //     },
+  //     // Used for quick/general responses and intent classification
+  //     classification: {
+  //       name: "gemini-3-flash-preview",
+  //       temperature: 0.2, // Low temperature for consistent classification
+  //       maxOutputTokens: 256,
+  //       maxInputTokens: 1000000,
+  //     },
+  //     // Used for image generation
+  //     imagen: {
+  //       name: "imagen-3.0-generate-001",
+  //     },
+  //   },
+  // },
+
+  // signal: {
+  //   // Optional: If not provided, Piotr will attempt to auto-detect from dataPath/data/accounts.json (under config.signal.data_path)
+  //   phoneNumber: null,
+  //   // Path where signal-cli state is stored
+  //   dataPath: "data/signal-cli",
+  // },
+
+  // performance: {
+  //   maxConcurrentRequests: 10,
+  //   messageProcessingTimeoutSecs: 30,
+  //   // Delay between concurrent Vertex AI API calls to avoid rate limits
+  //   apiCooldownMs: 1500,
+  // },
+
+  // bot: {
+  //   name: "Piotr",
+  //   location: "Unknown",
+  //   systemPrompt: "Helpful and witty AI assistant",
+  //   targetMessageLengthChars: 1000,
+  // },
+}

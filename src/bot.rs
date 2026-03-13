@@ -8,9 +8,6 @@ use crate::signal::{SignalClient, Envelope};
 use std::time::SystemTime;
 
 
-const MODEL_MAX_TOKENS: i32 = 1_000_000; // gemini-3-flash-preview limit
-const TOKEN_LIMIT: i32 = MODEL_MAX_TOKENS * 95 / 100; // 95% of limit
-
 #[derive(Debug)]
 enum BotResponse {
     Text(String),
@@ -26,10 +23,11 @@ pub struct SessionManager {
     bot_number: String,
     memory: Memory,
     profile_manager: DbProfileManager,
+    config: std::sync::Arc<crate::config::AppConfig>,
 }
 
 impl SessionManager {
-    pub fn new(signal_client: SignalClient, ai_client: VertexClient, bot_number: String, profile_manager: DbProfileManager) -> Self {
+    pub fn new(signal_client: SignalClient, ai_client: VertexClient, bot_number: String, profile_manager: DbProfileManager, config: std::sync::Arc<crate::config::AppConfig>) -> Self {
         Self {
             signal_client,
             ai_client,
@@ -37,6 +35,7 @@ impl SessionManager {
             bot_number,
             memory: Memory::new("data/learned_behaviors.json"),
             profile_manager,
+            config,
         }
     }
 
@@ -72,26 +71,9 @@ impl SessionManager {
                 };
                 self.state.add_user_message(&context_key, user_content).await;
 
-                // Manage Context Window (Async, non-blocking to other contexts)
-                self.manage_context_window(&context_key).await;
-
                 let text_lower = text.trim().to_lowercase();
 
-                // 2. Check for Commands
-                if text_lower == "/reset" {
-                    self.handle_reset(&context_key, &source, group_id.as_deref()).await;
-                    return;
-                }
-                if text_lower == "/help" {
-                    self.handle_help(&source, group_id.as_deref()).await;
-                    return;
-                }
-                if text_lower.starts_with("/model") {
-                    self.handle_model(&context_key, &source, group_id.as_deref(), &text).await;
-                    return;
-                }
-
-                // 3. Determine if we should reply
+                // 2. Determine if we should reply
                 let is_quote_reply = if let Some(quote) = &data.quote {
                     quote.author == self.bot_number
                 } else {
@@ -99,12 +81,13 @@ impl SessionManager {
                 };
 
                 // Explicit triggers
-                let mut is_mentioned = text_lower.contains("@piotr") || text_lower.contains("piotr");
+                let bot_name_lower = self.config.bot.name.to_lowercase();
+                let mut is_mentioned = text_lower.contains(&format!("@{}", bot_name_lower)) || text_lower.contains(&bot_name_lower);
 
                 // Also check native Signal mentions
                 if let Some(mentions) = &data.mentions {
                     for m in mentions {
-                        if m.number.as_deref() == Some(&self.bot_number) || m.name.as_deref().unwrap_or("").to_lowercase().contains("piotr") {
+                        if m.number.as_deref() == Some(&self.bot_number) || m.name.as_deref().unwrap_or("").to_lowercase().contains(&bot_name_lower) {
                             is_mentioned = true;
                             break;
                         }
@@ -180,59 +163,6 @@ impl SessionManager {
         }
     }
 
-    async fn handle_reset(&self, context_key: &str, reply_source: &str, reply_group_id: Option<&str>) {
-        self.state.clear_history(context_key).await;
-        if let Err(e) = self.signal_client.send_message(reply_source, reply_group_id, "Conversation history cleared.", None).await {
-            warn!("Failed to send reset confirmation to {}: {:?}", crate::utils::anonymize(reply_source), e);
-        }
-    }
-
-    async fn handle_help(&self, reply_source: &str, reply_group_id: Option<&str>) {
-         let help_msg = "I am Piotr. I can chat, generate images, and search the web.\n\n\
-                        Commands:\n\
-                        /reset - Clear our conversation history\n\
-                        /model [list|auto|<name>] - Select AI model\n\
-                        /help - Show this message\n\n\
-                        Triggers:\n\
-                        - Mention 'Piotr' or reply to me in groups.\n\
-                        - DM me directly.\n\
-                        - Ask for 'image', 'draw', 'sketch' for images.";
-        if let Err(e) = self.signal_client.send_message(reply_source, reply_group_id, help_msg, None).await {
-            warn!("Failed to send help message to {}: {:?}", crate::utils::anonymize(reply_source), e);
-        }
-    }
-
-    async fn handle_model(&self, context_key: &str, reply_source: &str, reply_group_id: Option<&str>, command_text: &str) {
-        let parts: Vec<&str> = command_text.split_whitespace().collect();
-        let arg = parts.get(1).map(|s| s.to_lowercase());
-
-        let response = match arg.as_deref() {
-            Some("list") => {
-                "Available Models:\n\
-                 - auto (Default/Smart Intent)\n\
-                 - gemini-3-flash-preview (Fast)\n\
-                 - gemini-3-pro-preview (Smart)\n\
-                 - imagen-3.0-generate-001 (Images)".to_string()
-            },
-            Some("auto") => {
-                self.state.remove_model_preference(context_key).await;
-                "Model set to AUTO (I will decide best model based on intent).".to_string()
-            },
-            Some(model) => {
-                self.state.set_model_preference(context_key, model).await;
-                format!("Model set to: {}. I will use this for all text responses.", model)
-            },
-            None => {
-                 let current = self.state.get_model_preference(context_key).await.unwrap_or_else(|| "auto".to_string());
-                 format!("Current model: {}. Use '/model list' to see options.", current)
-            }
-        };
-
-        if let Err(e) = self.signal_client.send_message(reply_source, reply_group_id, &response, None).await {
-            warn!("Failed to send model response to {}: {:?}", crate::utils::anonymize(reply_source), e);
-        }
-    }
-
     async fn process_ai_request(&self, reply_address: String, group_id: Option<String>, context_key: String, prompt: String, timestamp: u64, profile_key: String, source_name: Option<String>) {
         // Get or Create Sequencer
         let sequencer_tx = self.get_sequencer_tx(context_key.clone(), group_id.clone()).await;
@@ -251,9 +181,9 @@ impl SessionManager {
         }
     }
 
-    async fn generate_image_response(&self, intent: &str, prompt: &str) -> BotResponse {
-        let model = if intent == "IMAGE_4" { "imagen-4.0-generate-001" } else { "imagen-3.0-generate-001" };
-        info!("Attempting to generate image with model: {} for prompt", model);
+    async fn generate_image_response(&self, prompt: &str) -> BotResponse {
+        let model = &self.config.ai.models.imagen;
+        info!("Attempting to generate image with model: {} for prompt", model.name);
 
         match self.ai_client.generate_image(prompt, model).await {
             Ok(image_bytes) => {
@@ -270,20 +200,20 @@ impl SessionManager {
             },
             Err(e) => {
                 error!("Image generation failed (LOGGED ERROR): {:?}", e);
-                BotResponse::Error(format!("I could not generate that image with {}. I am sorry.", model))
+                BotResponse::Error(format!("I could not generate that image with {}. I am sorry.", model.name))
             }
         }
     }
 
     async fn generate_text_response(&self, intent: &str, context_key: &str, profile_key: &str, source_name: Option<String>, override_model: Option<String>, group_id: Option<String>) -> BotResponse {
-        let (model_id, use_search) = if let Some(ref m) = override_model {
-             (m.clone(), false) // Disable search by default for overrides
+        let (model_config, use_search) = if let Some(ref m) = override_model {
+             (crate::config::ModelSettings { name: m.clone(), ..Default::default() }, false) // Disable search by default for overrides
         } else if intent == "SEARCH" {
-            ("gemini-3-flash-preview".to_string(), true)
+            (self.config.ai.models.classification.clone(), true)
         } else if intent == "PRO" {
-            ("gemini-3-pro-preview".to_string(), false)
+            (self.config.ai.models.chat.clone(), false)
         } else {
-            ("gemini-3-flash-preview".to_string(), false)
+            (self.config.ai.models.classification.clone(), false)
         };
 
         // Clone history to Vec for API (Snapshot)
@@ -366,7 +296,7 @@ impl SessionManager {
         }
         final_history.extend(history_vec);
 
-        match self.ai_client.generate_content(final_history, &model_id, use_search).await {
+        match self.ai_client.generate_content(final_history, &model_config, use_search).await {
             Ok(text) => {
                 info!("AI Response generated (len: {})", text.len());
                 BotResponse::Text(text)
@@ -410,20 +340,29 @@ impl SessionManager {
                     // Pre-Processing (Intent & Mention Differentiation)
                     // Differentiate a passing mention from a direct address
                     let prompt_lower = request.prompt.to_lowercase();
-                    let is_mentioned = prompt_lower.contains("piotr") || prompt_lower.contains("@piotr") || prompt_lower.contains("￼");
+                    let bot_name_lower = self_clone_seq.config.bot.name.to_lowercase();
+                    let is_mentioned = prompt_lower.contains(&bot_name_lower) || prompt_lower.contains(&format!("@{}", bot_name_lower)) || prompt_lower.contains("￼");
                     let mut should_abort_generation = false;
 
                     let model_override = state_seq.get_model_preference(&context_key_seq).await;
 
                     let response = if let Some(model) = model_override {
                         info!("Using override model: {}", model);
+                        let model_cfg = if model == self_clone_seq.config.ai.models.chat.name {
+                            &self_clone_seq.config.ai.models.chat
+                        } else if model == self_clone_seq.config.ai.models.imagen.name {
+                            &self_clone_seq.config.ai.models.imagen
+                        } else {
+                            &self_clone_seq.config.ai.models.classification
+                        };
+                        self_clone_seq.manage_context_window(&context_key_seq, model_cfg).await;
                         self_clone_seq.generate_text_response("OVERRIDE", &context_key_seq, &request.profile_key, request.source_name.clone(), Some(model), group_id_context.clone()).await
                     } else {
                         // Intent Classification (Auto Mode)
                         let mut prompt_to_test = request.prompt.clone();
                         if is_mentioned {
-                            // Let the LLM also decide if this string is talking ABOUT piotr or TO piotr (this helps save tokens/spams if we catch early)
-                            prompt_to_test = format!("SYSTEM: Analyze if the user is talking *to* you or just talking *about* you. Reply IGNORE if they are mentioning you in passing to someone else without expecting a response. If they are addressing you directly (e.g. just '@Piotr' or asking a question), categorize the intent normally as FLASH, SEARCH, PRO, or IMAGE. User prompt: {}", request.prompt);
+                            // Let the LLM also decide if this string is talking ABOUT the bot or TO the bot (this helps save tokens/spams if we catch early)
+                            prompt_to_test = format!("SYSTEM: Analyze if the user is talking *to* you or just talking *about* you. Reply IGNORE if they are mentioning you in passing to someone else without expecting a response. If they are addressing you directly (e.g. just '@{}' or asking a question), categorize the intent normally as FLASH, SEARCH, PRO, or IMAGE. User prompt: {}", self_clone_seq.config.bot.name, request.prompt);
                         }
 
                         let intent = match ai_client_seq.classify_intent(&prompt_to_test).await {
@@ -436,12 +375,18 @@ impl SessionManager {
                         info!("Classified intent: {}", intent);
 
                         if intent.starts_with("IMAGE") {
-                            self_clone_seq.generate_image_response(&intent, &request.prompt).await
+                            self_clone_seq.generate_image_response(&request.prompt).await
                         } else if intent == "IGNORE" {
                             should_abort_generation = true;
                             // Returning an empty text avoids the signal send logic below
                             BotResponse::Error(String::new())
                         } else {
+                            let model_cfg = if intent == "PRO" {
+                                &self_clone_seq.config.ai.models.chat
+                            } else {
+                                &self_clone_seq.config.ai.models.classification
+                            };
+                            self_clone_seq.manage_context_window(&context_key_seq, model_cfg).await;
                             self_clone_seq.generate_text_response(&intent, &context_key_seq, &request.profile_key, request.source_name.clone(), None, group_id_context.clone()).await
                         }
                     };
@@ -456,6 +401,7 @@ impl SessionManager {
                              let source_name_clone = request.source_name.clone();
                              let pm = profile_manager_seq.clone();
                              let aic = ai_client_seq.clone();
+                             let bot_name_inner = self_clone_seq.config.bot.name.clone();
 
                              tokio::spawn(async move {
                                  // 1. Update User Profile
@@ -478,7 +424,7 @@ impl SessionManager {
                                      if let Ok(current_group) = pm.get_group_profile(gid, None).await {
                                          // Provide a slightly richer history string for the group context
                                          let user_display = source_name_clone.unwrap_or_else(|| profile_key_clone.clone());
-                                         let history_str = format!("{} (User): {}\nPiotr (Bot): {}", user_display, prompt_clone, text_clone);
+                                         let history_str = format!("{} (User): {}\n{} (Bot): {}", user_display, prompt_clone, bot_name_inner, text_clone);
 
                                          match aic.analyze_group_profile_update(&current_group, &history_str).await {
                                              Ok(updated_group) => {
@@ -539,19 +485,24 @@ impl SessionManager {
         }
     }
 
-    async fn manage_context_window(&self, context_key: &str) {
-        if self.state.get_history_len(context_key).await < 30 {
+    async fn manage_context_window(&self, context_key: &str, model_settings: &crate::config::ModelSettings) {
+        let current_len = self.state.get_history_len(context_key).await;
+        if current_len < 30 {
             return;
         }
 
         let history_snapshot = self.state.get_history_snapshot(context_key).await;
 
-        match self.ai_client.count_tokens(history_snapshot, "gemini-3-flash-preview").await {
+        let max_tokens = model_settings.max_input_tokens.unwrap_or(1_000_000);
+        let token_limit = (max_tokens as f32 * 0.95) as i32;
+
+        match self.ai_client.count_tokens(history_snapshot, model_settings).await {
            Ok(count) => {
-               if count > TOKEN_LIMIT {
-                   info!("Context window for {} is full ({} tokens > {}). Pruning...", crate::utils::anonymize(context_key), count, TOKEN_LIMIT);
-                   if self.state.get_history_len(context_key).await > 4 {
-                       self.state.prune_history(context_key, 4).await;
+               if count > token_limit {
+                   info!("Context window for {} is full ({} tokens > {}). Pruning...", crate::utils::anonymize(context_key), count, token_limit);
+                   let to_remove = Self::calculate_prune_amount(current_len, count, token_limit);
+                   if current_len > to_remove {
+                       self.state.prune_history(context_key, to_remove).await;
                    } else {
                        self.state.clear_history(context_key).await;
                    }
@@ -559,6 +510,23 @@ impl SessionManager {
            },
            Err(e) => error!("Failed to count tokens for {}: {:?}", crate::utils::anonymize(context_key), e)
         }
+    }
+
+    fn calculate_prune_amount(current_len: usize, current_tokens: i32, token_limit: i32) -> usize {
+        if current_tokens <= token_limit {
+            return 0;
+        }
+
+        let excess_tokens = (current_tokens - token_limit) as f32;
+        let avg_tokens_per_msg = current_tokens as f32 / current_len as f32;
+        let mut to_remove_estimate = (excess_tokens / avg_tokens_per_msg).ceil() as usize;
+
+        if to_remove_estimate == 0 {
+            to_remove_estimate = 4;
+        }
+        
+        // Ensure we don't return more than current_len
+        to_remove_estimate.min(current_len)
     }
 }
 
@@ -569,13 +537,6 @@ fn sanitize_display_name(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_bot_constants() {
-        assert!(TOKEN_LIMIT < MODEL_MAX_TOKENS);
-        assert_eq!(MODEL_MAX_TOKENS, 1_000_000);
-        assert_eq!(TOKEN_LIMIT, 950_000);
-    }
 
     #[test]
     fn test_bot_response_formatting() {
@@ -617,55 +578,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_handle_model_parsing_variations() {
-        // We can test the parsing logic of handle_model by passing weird command strings
-        // Though handle_model modifies state, we can just ensure it doesn't panic on massive input
 
-        let db_pool = sqlx::postgres::PgPoolOptions::new().connect_lazy("postgres://dummy").unwrap();
-        let profile_manager = DbProfileManager::new(db_pool, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").unwrap();
-        // To build a SessionManager, we need dummy clients
-        // Because of the struct dependencies and `reqwest` inside VertexClient etc,
-        // creating a full SessionManager just to test command parsing is heavy,
-        // but it proves the system doesn't crash on injection.
-        // SignalClient::new returns a Result<(SignalClient, Receiver)>
-        let signal_client = SignalClient::new_dummy();
-        let ai_client = VertexClient::new("dummy");
-
-        let manager = SessionManager::new(signal_client, ai_client, "dummy".to_string(), profile_manager);
-        let ctx = "test_context";
-
-        // 1. Valid commands
-        manager.handle_model(ctx, "source", None, "/model list").await;
-        manager.handle_model(ctx, "source", None, "/model auto").await;
-
-        // 2. Missing arg
-        manager.handle_model(ctx, "source", None, "/model").await;
-
-        // 3. Adversarial / extremely long injection attempt
-        let mut massive_command = String::from("/model ");
-        for _ in 0..5000 {
-            massive_command.push_str("DROP TABLE users; ");
-        }
-
-        // It should just treat the first 5000 words as the "arg" and set preference, or break safely
-        manager.handle_model(ctx, "source", None, &massive_command).await;
-
-        // Verify state is tracking what we expect, no panic
-        let pref = manager.state.get_model_preference(ctx).await;
-        assert!(pref.is_some());
-    }
-
-    #[test]
-    fn test_token_limit_arithmetic_strictly() {
-        let max = 1_000_000_f64;
-        let limit = max * 0.95;
-        assert_eq!(limit as i32, TOKEN_LIMIT);
-
-        // Ensure arithmetic didn't overflow or undercalculate causing safety risks
-        assert!(TOKEN_LIMIT > 900_000);
-        assert!(TOKEN_LIMIT < 1_000_000);
-    }
 
     #[test]
     fn test_sanitize_display_name_strictly() {
@@ -674,5 +587,28 @@ mod tests {
         assert_eq!(sanitize_display_name("Name\" Hack"), "Name\\\" Hack");
         assert_eq!(sanitize_display_name("Line1\r\nLine2"), "Line1 Line2");
         assert_eq!(sanitize_display_name("Emoji 😈\n\r\"Test\""), "Emoji 😈 \\\"Test\\\"");
+    }
+
+    #[test]
+    fn test_calculate_prune_amount() {
+        // Base case: 1000 tokens limit, currently at 1200 tokens across 60 messages
+        // Avg tokens per msg = 20. Excess = 200. Should remove exactly 10.
+        assert_eq!(SessionManager::calculate_prune_amount(60, 1200, 1000), 10);
+        
+        // Case: ceiling rounds up correctly.
+        // 1000 limit, 1050 tokens, 30 msgs
+        // Avg tokens per msg = 35. Excess = 50. 50/35 = 1.42. Should prune 2.
+        assert_eq!(SessionManager::calculate_prune_amount(30, 1050, 1000), 2);
+
+        // Case: No pruning needed
+        assert_eq!(SessionManager::calculate_prune_amount(50, 900, 1000), 0);
+        assert_eq!(SessionManager::calculate_prune_amount(50, 1000, 1000), 0);
+
+        // Case: Pruning estimate ends up being 0 somehow (e.g. extremely small excess rounded down?).
+        // 1000 limit, 1001 tokens, 100 msgs. Avg = 10.01 per msg. Excess = 1. 1/10.01 = 0.099 -> ceil() -> 1.
+        assert_eq!(SessionManager::calculate_prune_amount(100, 1001, 1000), 1);
+
+        // Case: Pruning exactly what's needed for the limit
+        assert_eq!(SessionManager::calculate_prune_amount(5, 5000, 1000), 4);
     }
 }

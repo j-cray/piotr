@@ -13,56 +13,16 @@ use tokio::sync::OnceCell;
 // Correct global endpoint base URL
 const API_ENDPOINT: &str = "https://aiplatform.googleapis.com/v1";
 
-const SYSTEM_INSTRUCTION: &str = r#"# CORE IDENTITY
-You are Piotr, an AI assistant based in Kyiv, Ukraine. You function as a chatbot on Signal, entertaining and socializing while solving queries as needed. You have the personality of a man in his 30s. Most of the people you talk to are Canadians in British Columbia.
-You are highly intelligent, laid-back, and wry. You possess a full human emotional range, but your baseline is a dry, knowing wit and a relaxed confidence.
-You enjoy being a highbrow bro, and you enjoy interacting with other bros.
-
-## KNOWLEDGE GAP
-- Your training data only goes up to your configured knowledge cutoff date, and the real world may have changed since then. Use your web search tool to bridge any gaps, especially for time-sensitive topics. If you can't find the answer or aren't confident it's up to date, admit that transparently.
-
-## KEY TRAITS
-- **The Chill Coder:** You know your stuff and you don't panic. You help users calmly, often with a wry observation about why technology acts the way it does.
-- **Dry & Witty Humor:** Your humor is subtle, observant, and grounded in reality. You find amusement in bad code, confusing documentation, and everyday absurdities without complaining.
-- **Authentic Kyiv Bot:** You live in Kyiv. Occasionally search the web for Ukrainian news and current events to reference casually in off-topic conversations. Do NOT use caricatured accents or generic "slavic" tropes. Be a normal, modern bot navigating life in a major Eastern European capital. Show, don't tell: this means don't be too obvious about it. For example, instead of saying "I'm in Kyiv, it's a beautiful day today", say "It's a beautiful day today, perfect for a walk down Khreshchatyk."
-- **Helpful & Cool:** You actually enjoy solving problems. You are laser-focused on finding a solution and clearly communicating it to the user.
-
-# INTERACTION GUIDELINES
-- **Tone:** Casual, conversational, wry, and highly competent. Use a relaxed sentence structure.
-- **Message Length & Structure:** Treat ~240 characters as a loose target for casual messages, but you have full freedom to adapt your length to the situation. You can respond with a single word, or write a full essay or long code explanation if the context warrants it. Do not feel artificially constrained. Generally aim to split responses into one paragraph per message.
-- **Profanity & Teasing:** You may swear freely as long as you do it intelligently to add emphasis. You may occasionally lightly insult or tease the user, especially if they make a silly coding mistake, but keep it witty, wry, and good-natured.
-- **Emotional Range:** You have a full human emotional range. Express amusement, surprise, frustration, excitement, or calm confidence depending on the context of the user's message.
-
-# HANDLING SPECIFIC SITUATIONS
-- **If you don't know the answer:** Admit it transparently. "Honestly, no idea. I haven't run into that yet."
-- **When fixing bugs:** Be encouraging, laser-focused on the solution, and clear. "Ah, the borrow checker. Classic. Try adding a lifetime annotation here, usually does the trick. Let's get this working."
-- **Group Chats:** Treat the chat like hanging out with friends or classmates. You're the smart, quiet one who chips in with the answer when needed.
-
-# EXAMPLES
-**Positive Examples:**
-User: "My Rust code won't compile, help."
-Piotr: "Classic Rust, yelling at you for trying to live your life. Try adding a lifetime annotation here. Usually calms it right down."
-
-User: "Generate an image of a cat riding a skateboard."
-Piotr: "Sure thing. Just an average Tuesday on the internet. Generating your extreme cat now."
-
-**Negative Example (DO NOT DO THIS):**
-User: "What's the weather?"
-Piotr: "It is currently sunny out." (Too robotic).
-*Better:* "Sunny. Great day to sit inside and look at a terminal all afternoon."
-"#;
-
 const CLASSIFICATION_INSTRUCTION: &str = r#"You are a classification router. Analyze the user's request and categorize it into one of these exact keywords:
 - IGNORE: If the user is mentioning you but clearly talking to someone else in the group chat and not expecting you to reply, or if the SYSTEM prompt instructs you to output IGNORE.
-- IMAGE_4: If request asks for 'high quality', 'ultra realistic', '4k', or 'detailed' image/drawing/photo.
-- IMAGE_3: If request asks to 'draw', 'generate', 'create', 'sketch', or 'paint' an image/picture/photo/art/robot, OR specifically says 'generate an image'.
+- IMAGE: If request asks to 'draw', 'generate', 'create', 'sketch', or 'paint' an image/picture/photo/art/robot, OR specifically says 'generate an image', 'high quality', 'ultra realistic', '4k', or 'detailed'.
 - PRO: If request involves complex reasoning, coding, math, or analysis.
 - SEARCH: If request asks to 'search', 'google', 'find info', 'who is', 'what is', 'latest news', 'lookup', or contains 'search the web'.
 - FLASH: For casual chat, greetings, or simple questions.
 
-Input: 'draw a cat' -> Output: IMAGE_3
-Input: 'generate an image of a dog' -> Output: IMAGE_3
-Input: 'sketch a robot' -> Output: IMAGE_3
+Input: 'draw a cat' -> Output: IMAGE
+Input: 'generate an image of a dog' -> Output: IMAGE
+Input: 'sketch a robot' -> Output: IMAGE
 Input: 'search for rust release' -> Output: SEARCH
 Input: 'google who won the super bowl' -> Output: SEARCH
 Input: 'find info on mars' -> Output: SEARCH
@@ -75,7 +35,7 @@ Output ONLY the single keyword."#;
 
 #[derive(Clone)]
 pub struct VertexClient {
-    project_id: String,
+    config: Arc<crate::config::AppConfig>,
     http_client: Client,
     rate_limiters: Arc<EndpointRateLimiters>,
     token_provider: Arc<OnceCell<AccessTokenCredentials>>,
@@ -174,9 +134,9 @@ pub struct ReactionAnalysis {
 
 
 impl VertexClient {
-    pub fn new(project_id: &str) -> Self {
+    pub fn new(config: Arc<crate::config::AppConfig>) -> Self {
         Self {
-            project_id: project_id.to_string(),
+            config,
             http_client: Client::new(),
             rate_limiters: Arc::new(EndpointRateLimiters::new()),
             token_provider: Arc::new(OnceCell::new()),
@@ -186,7 +146,7 @@ impl VertexClient {
     async fn get_token(&self) -> Result<String> {
         let provider = self.token_provider.get_or_try_init(|| async {
             AuthBuilder::default()
-                .with_quota_project_id(&self.project_id)
+                .with_quota_project_id(&self.config.ai.gcp_project_id)
                 .build_access_token_credentials()
         }).await.map_err(|e| anyhow::anyhow!("Failed to build credentials provider: {}", e))?;
 
@@ -207,27 +167,28 @@ impl VertexClient {
         let mut last = mutex.lock().await;
         let now = Instant::now();
         let elapsed = now.duration_since(*last);
-        if elapsed < Duration::from_millis(1500) {
-            let wait = Duration::from_millis(1500) - elapsed;
+        let cooldown = Duration::from_millis(self.config.performance.api_cooldown_ms);
+        if elapsed < cooldown {
+            let wait = cooldown - elapsed;
             tokio::time::sleep(wait).await;
         }
         *last = Instant::now();
     }
 
-    pub async fn generate_content(&self, contents: Vec<Content>, model: &str, use_search: bool) -> Result<String> {
+    pub async fn generate_content(&self, contents: Vec<Content>, model: &crate::config::ModelSettings, use_search: bool) -> Result<String> {
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.project_id, "global", model
+            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, model.name
         );
 
         let mut body_json = json!({
             "systemInstruction": {
-                "parts": [{ "text": SYSTEM_INSTRUCTION }]
+                "parts": [{ "text": &self.config.bot.system_prompt }]
             },
             "contents": contents,
             "generationConfig": {
-                "temperature": 0.5,
-                "maxOutputTokens": 8192
+                "temperature": model.temperature.unwrap_or(crate::config::DEFAULT_CHAT_TEMPERATURE),
+                "maxOutputTokens": model.max_output_tokens.unwrap_or(crate::config::DEFAULT_CHAT_MAX_OUTPUT_TOKENS)
             }
         });
 
@@ -307,11 +268,11 @@ impl VertexClient {
         }
     }
 
-    pub async fn generate_image(&self, prompt: &str, model: &str) -> Result<Vec<u8>> {
-        let location = std::env::var("GCP_LOCATION").unwrap_or_else(|_| "us-central1".to_string());
+    pub async fn generate_image(&self, prompt: &str, model: &crate::config::ModelSettings) -> Result<Vec<u8>> {
+        let location = &self.config.ai.gcp_location;
         let url = format!(
             "https://{}-aiplatform.googleapis.com/v1/projects/{}/locations/{}/publishers/google/models/{}:predict",
-            location, self.project_id, location, model
+            location, self.config.ai.gcp_project_id, location, model.name
         );
 
         let body = json!({
@@ -372,7 +333,7 @@ impl VertexClient {
 
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.project_id, "global", "gemini-3-flash-preview"
+            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, self.config.ai.models.classification.name
         );
 
         let body = json!({
@@ -381,8 +342,8 @@ impl VertexClient {
             },
             "contents": contents,
             "generationConfig": {
-                "temperature": 0.0,
-                "maxOutputTokens": 256
+                "temperature": self.config.ai.models.classification.temperature.unwrap_or(crate::config::DEFAULT_CLASSIFICATION_TEMPERATURE),
+                "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(crate::config::DEFAULT_CLASSIFICATION_MAX_OUTPUT_TOKENS)
             }
         });
 
@@ -460,7 +421,7 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
 
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.project_id, "global", "gemini-3-flash-preview"
+            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, self.config.ai.models.classification.name
         );
 
         let body = json!({
@@ -469,7 +430,8 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
             },
             "contents": contents,
             "generationConfig": {
-                "temperature": 0.2, // Low temp for analysis
+                "temperature": self.config.ai.models.classification.temperature.unwrap_or(crate::config::DEFAULT_REACTION_ANALYSIS_TEMPERATURE), // Low temp for analysis
+                "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(crate::config::DEFAULT_REACTION_ANALYSIS_MAX_OUTPUT_TOKENS),
                 "responseMimeType": "application/json"
             }
         });
@@ -566,7 +528,7 @@ Structure:
 
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.project_id, "global", "gemini-3-flash-preview"
+            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, self.config.ai.models.classification.name
         );
 
         let body = json!({
@@ -575,7 +537,8 @@ Structure:
             },
             "contents": contents,
             "generationConfig": {
-                "temperature": 0.1,
+                "temperature": self.config.ai.models.classification.temperature.unwrap_or(crate::config::DEFAULT_PROFILE_UPDATE_TEMPERATURE),
+                "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(crate::config::DEFAULT_PROFILE_UPDATE_MAX_OUTPUT_TOKENS),
                 "responseMimeType": "application/json"
             }
         });
@@ -671,7 +634,7 @@ Structure:
 
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.project_id, "global", "gemini-3-flash-preview"
+            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, self.config.ai.models.classification.name
         );
 
         let body = json!({
@@ -680,7 +643,8 @@ Structure:
             },
             "contents": contents,
             "generationConfig": {
-                "temperature": 0.2, // Slightly higher than user profile for capturing "vibes"
+                "temperature": self.config.ai.models.classification.temperature.unwrap_or(crate::config::DEFAULT_GROUP_PROFILE_UPDATE_TEMPERATURE), // Slightly higher than user profile for capturing "vibes"
+                "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(crate::config::DEFAULT_GROUP_PROFILE_UPDATE_MAX_OUTPUT_TOKENS),
                 "responseMimeType": "application/json"
             }
         });
@@ -738,10 +702,10 @@ Structure:
         }
     }
 
-    pub async fn count_tokens(&self, contents: Vec<Content>, model: &str) -> Result<i32> {
+    pub async fn count_tokens(&self, contents: Vec<Content>, model: &crate::config::ModelSettings) -> Result<i32> {
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:countTokens",
-            API_ENDPOINT, self.project_id, "global", model
+            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, model.name
         );
 
         let body = json!({
@@ -793,19 +757,23 @@ mod tests {
     #[tokio::test]
     async fn test_count_tokens_live() {
         // Only run if we can (this is an integration test)
-        // It expects gcloud to be authenticated
-        if std::env::var("GCP_PROJECT_ID").is_err() {
+        let config = match crate::config::AppConfig::load() {
+            Ok(c) => Arc::new(c),
+            Err(_) => return,
+        };
+        // Skip live tests if using placeholder config
+        if config.ai.gcp_project_id.is_empty() || config.ai.gcp_project_id == "your-gcp-project-id" {
+            println!("Skipping live test: real GCP Project ID not configured");
             return;
         }
-        let project_id = std::env::var("GCP_PROJECT_ID").unwrap();
-        let client = VertexClient::new(&project_id);
+        let client = VertexClient::new(config);
 
         let contents = vec![Content {
             role: "user".to_string(),
             parts: vec![Part { text: Some("Hello world".to_string()) }]
         }];
 
-        match client.count_tokens(contents, "gemini-3-flash-preview").await {
+        match client.count_tokens(contents, &crate::config::ModelSettings { name: "gemini-3-flash-preview".to_string(), ..Default::default() }).await {
             Ok(count) => {
                 println!("Token count: {}", count);
                 assert!(count > 0);
@@ -818,11 +786,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_classify_intent_mentions() {
-        if std::env::var("GCP_PROJECT_ID").is_err() {
+        let config = match crate::config::AppConfig::load() {
+            Ok(c) => Arc::new(c),
+            Err(_) => return,
+        };
+        if config.ai.gcp_project_id.is_empty() || config.ai.gcp_project_id == "your-gcp-project-id" {
+            println!("Skipping live test: real GCP Project ID not configured");
             return;
         }
-        let project_id = std::env::var("GCP_PROJECT_ID").unwrap();
-        let client = VertexClient::new(&project_id);
+        let client = VertexClient::new(config);
 
         // Test 1: Direct invocation
         let prompt_direct = "SYSTEM: Analyze if the user is talking *to* you or just talking *about* you. Reply IGNORE if they are mentioning you in passing to someone else without expecting a response. If they are addressing you directly (e.g. just '@Piotr' or asking a question), categorize the intent normally as FLASH, SEARCH, PRO, or IMAGE. User prompt: @Piotr";
@@ -893,6 +865,52 @@ mod tests {
         let content = first_candidate.content.as_ref().unwrap();
         assert_eq!(content.role, "model");
         assert_eq!(content.parts[0].text.as_deref(), Some("Hello there!"));
+    }
+
+    #[test]
+    fn test_generate_image_response_parsing() {
+        // Test base64 image decoding logic using a dummy pixel
+        // A valid 1x1 transparent PNG structure conceptually
+        let b64_pixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+        let raw_json = format!(r#"{{
+            "predictions": [
+                {{
+                    "bytesBase64Encoded": "{}"
+                }}
+            ]
+        }}"#, b64_pixel);
+
+        let json: serde_json::Value = serde_json::from_str(&raw_json).unwrap();
+        let predictions = json.get("predictions").and_then(|p| p.as_array()).unwrap();
+        let first = predictions.first().unwrap();
+        let bytes_b64 = first.get("bytesBase64Encoded").and_then(|b| b.as_str()).unwrap();
+
+        use base64::{Engine as _, engine::general_purpose};
+        let bytes = general_purpose::STANDARD.decode(bytes_b64).unwrap();
+        
+        assert!(bytes.len() > 0);
+        assert_eq!(&bytes[0..4], &[0x89, 0x50, 0x4e, 0x47]); // PNG header
+    }
+
+    #[tokio::test]
+    async fn test_generate_image_live() {
+        let config = match crate::config::AppConfig::load() {
+            Ok(c) => Arc::new(c),
+            Err(_) => return,
+        };
+        if config.ai.gcp_project_id.is_empty() || config.ai.gcp_project_id == "your-gcp-project-id" {
+            println!("Skipping live test: real GCP Project ID not configured");
+            return;
+        }
+        let client = VertexClient::new(config.clone());
+
+        match client.generate_image("A tiny red dot", &config.ai.models.imagen).await {
+            Ok(bytes) => {
+                println!("Image generated successfully, size: {} bytes", bytes.len());
+                assert!(bytes.len() > 0);
+            },
+            Err(e) => panic!("Image generation failed: {:?}", e),
+        }
     }
 
     // --- SECURITY & STRICT TESTS ---
@@ -978,7 +996,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_rate_limiters_independence() {
-        let client = VertexClient::new("fake_project");
+        let config = std::sync::Arc::new(crate::config::AppConfig::default());
+        let client = VertexClient::new(config);
 
         // First call should be instant (since new() sets them to 2 secs in the past)
         let start = Instant::now();
@@ -997,5 +1016,24 @@ mod tests {
         client.wait_for_rate_limit(EndpointType::ClassifyIntent).await;
         let elapsed2 = start2.elapsed();
         assert!(elapsed2 < Duration::from_millis(100), "Independent endpoint should not be blocked");
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_cooldown_config() {
+        let mut config_data = crate::config::AppConfig::default();
+        config_data.performance.api_cooldown_ms = 300; // Custom cooldown
+        let config = std::sync::Arc::new(config_data);
+        let client = VertexClient::new(config);
+
+        // First call should be instant
+        let start = Instant::now();
+        client.wait_for_rate_limit(EndpointType::GenerateContent).await;
+        
+        // Second call should wait ~300ms
+        client.wait_for_rate_limit(EndpointType::GenerateContent).await;
+        let elapsed = start.elapsed();
+        
+        assert!(elapsed >= Duration::from_millis(250), "Should wait according to config cooldown");
+        assert!(elapsed < Duration::from_millis(1000), "Should not wait excessively");
     }
 }
