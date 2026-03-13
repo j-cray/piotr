@@ -75,7 +75,7 @@ Output ONLY the single keyword."#;
 
 #[derive(Clone)]
 pub struct VertexClient {
-    project_id: String,
+    config: Arc<crate::config::AppConfig>,
     http_client: Client,
     rate_limiters: Arc<EndpointRateLimiters>,
     token_provider: Arc<OnceCell<AccessTokenCredentials>>,
@@ -174,9 +174,9 @@ pub struct ReactionAnalysis {
 
 
 impl VertexClient {
-    pub fn new(project_id: &str) -> Self {
+    pub fn new(config: Arc<crate::config::AppConfig>) -> Self {
         Self {
-            project_id: project_id.to_string(),
+            config,
             http_client: Client::new(),
             rate_limiters: Arc::new(EndpointRateLimiters::new()),
             token_provider: Arc::new(OnceCell::new()),
@@ -186,7 +186,7 @@ impl VertexClient {
     async fn get_token(&self) -> Result<String> {
         let provider = self.token_provider.get_or_try_init(|| async {
             AuthBuilder::default()
-                .with_quota_project_id(&self.project_id)
+                .with_quota_project_id(&self.config.ai.gcp_project_id)
                 .build_access_token_credentials()
         }).await.map_err(|e| anyhow::anyhow!("Failed to build credentials provider: {}", e))?;
 
@@ -217,7 +217,7 @@ impl VertexClient {
     pub async fn generate_content(&self, contents: Vec<Content>, model: &str, use_search: bool) -> Result<String> {
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.project_id, "global", model
+            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, model
         );
 
         let mut body_json = json!({
@@ -308,10 +308,10 @@ impl VertexClient {
     }
 
     pub async fn generate_image(&self, prompt: &str, model: &str) -> Result<Vec<u8>> {
-        let location = std::env::var("GCP_LOCATION").unwrap_or_else(|_| "us-central1".to_string());
+        let location = &self.config.ai.gcp_location;
         let url = format!(
             "https://{}-aiplatform.googleapis.com/v1/projects/{}/locations/{}/publishers/google/models/{}:predict",
-            location, self.project_id, location, model
+            location, self.config.ai.gcp_project_id, location, model
         );
 
         let body = json!({
@@ -372,7 +372,7 @@ impl VertexClient {
 
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.project_id, "global", "gemini-3-flash-preview"
+            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, self.config.ai.models.classification
         );
 
         let body = json!({
@@ -460,7 +460,7 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
 
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.project_id, "global", "gemini-3-flash-preview"
+            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, self.config.ai.models.classification
         );
 
         let body = json!({
@@ -566,7 +566,7 @@ Structure:
 
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.project_id, "global", "gemini-3-flash-preview"
+            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, self.config.ai.models.classification
         );
 
         let body = json!({
@@ -671,7 +671,7 @@ Structure:
 
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.project_id, "global", "gemini-3-flash-preview"
+            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, self.config.ai.models.classification
         );
 
         let body = json!({
@@ -741,7 +741,7 @@ Structure:
     pub async fn count_tokens(&self, contents: Vec<Content>, model: &str) -> Result<i32> {
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:countTokens",
-            API_ENDPOINT, self.project_id, "global", model
+            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, model
         );
 
         let body = json!({
@@ -793,12 +793,11 @@ mod tests {
     #[tokio::test]
     async fn test_count_tokens_live() {
         // Only run if we can (this is an integration test)
-        // It expects gcloud to be authenticated
-        if std::env::var("GCP_PROJECT_ID").is_err() {
-            return;
-        }
-        let project_id = std::env::var("GCP_PROJECT_ID").unwrap();
-        let client = VertexClient::new(&project_id);
+        let config = match crate::config::AppConfig::load() {
+            Ok(c) => Arc::new(c),
+            Err(_) => return,
+        };
+        let client = VertexClient::new(config);
 
         let contents = vec![Content {
             role: "user".to_string(),
@@ -818,11 +817,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_classify_intent_mentions() {
-        if std::env::var("GCP_PROJECT_ID").is_err() {
-            return;
-        }
-        let project_id = std::env::var("GCP_PROJECT_ID").unwrap();
-        let client = VertexClient::new(&project_id);
+        let config = match crate::config::AppConfig::load() {
+            Ok(c) => Arc::new(c),
+            Err(_) => return,
+        };
+        let client = VertexClient::new(config);
 
         // Test 1: Direct invocation
         let prompt_direct = "SYSTEM: Analyze if the user is talking *to* you or just talking *about* you. Reply IGNORE if they are mentioning you in passing to someone else without expecting a response. If they are addressing you directly (e.g. just '@Piotr' or asking a question), categorize the intent normally as FLASH, SEARCH, PRO, or IMAGE. User prompt: @Piotr";
@@ -978,7 +977,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_rate_limiters_independence() {
-        let client = VertexClient::new("fake_project");
+        let config = std::sync::Arc::new(crate::config::AppConfig::default());
+        let client = VertexClient::new(config);
 
         // First call should be instant (since new() sets them to 2 secs in the past)
         let start = Instant::now();

@@ -161,7 +161,7 @@ impl SignalClient {
         }
     }
 
-    pub async fn new(user_phone: &str) -> Result<(Self, mpsc::Receiver<SignalMessage>)> {
+    pub async fn new(user_phone: &str, data_path: &str) -> Result<(Self, mpsc::Receiver<SignalMessage>)> {
         // Validate E.164 phone number format before passing to external process.
         // Length and prefix are checked before any slice access.
         let valid_phone = user_phone.starts_with('+')
@@ -175,7 +175,7 @@ impl SignalClient {
         info!("Starting signal-cli for user: [REDACTED]");
         let mut child = Command::new("signal-cli")
             .arg("--config")
-            .arg("data/signal-cli")
+            .arg(data_path)
             .arg("-u")
             .arg(user_phone)
             .arg("--output=json")

@@ -2,25 +2,24 @@ use dotenv::dotenv;
 use tracing::{info, error, Instrument};
 use std::time::Duration;
 use anyhow::Context;
-use piotr::{ai, bot, db, signal, utils};
+use piotr::{ai, bot, db, signal, utils, config::AppConfig};
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv().ok();
     tracing_subscriber::fmt::init();
-
     info!("Starting Signal Bot...");
 
+    // Load Configuration
+    let config = Arc::new(AppConfig::load().context("Failed to load configuration from config.json5 or environment variables")?);
+
     // Initialize Database
-    let database_url = std::env::var("DATABASE_URL")
-        .context("DATABASE_URL environment variable not set")?;
-    let db = db::Database::new(&database_url).await?;
+    let db = db::Database::new(&config.database.url).await?;
     db.run_migrations().await?;
 
     // Initialize Profile Manager
-    let encryption_key = std::env::var("PROFILE_ENCRYPTION_KEY")
-        .context("PROFILE_ENCRYPTION_KEY environment variable not set")?;
-    let profile_manager = ai::memory::DbProfileManager::new(db.pool.clone(), &encryption_key)?;
+    let profile_manager = ai::memory::DbProfileManager::new(db.pool.clone(), &config.security.profile_encryption_key)?;
 
     // Migrate existing profiles (if any)
     if let Err(e) = profile_manager.migrate_json_profiles("data/profiles").await {
@@ -29,22 +28,26 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Initialize AI client
-    let project_id = std::env::var("GCP_PROJECT_ID").context("GCP_PROJECT_ID must be set")?;
-    let ai_client = ai::VertexClient::new(&project_id);
+    let ai_client = ai::VertexClient::new(config.clone());
 
-    // Initialize Signal service - Auto-detect linked number
-    let accounts_json = std::fs::read_to_string("data/signal-cli/data/accounts.json")
-        .context("Failed to read accounts.json - did you run the linking script?")?;
-    let accounts: serde_json::Value = serde_json::from_str(&accounts_json)
-        .context("accounts.json is not valid JSON")?;
-    let signal_phone = accounts["accounts"]
-        .get(0)
-        .and_then(|v| v.get("number"))
-        .and_then(|v| v.as_str())
-        .context("Could not find accounts[0].number in accounts.json - check the file structure")?
-        .to_string();
+    // Initialize Signal service - Auto-detect linked number or use configured
+    let signal_phone = match &config.signal.phone_number {
+        Some(num) => num.clone(),
+        None => {
+            let accounts_json = std::fs::read_to_string(format!("{}/accounts.json", config.signal.data_path))
+                .context(format!("Failed to read {}/accounts.json - did you run the linking script?", config.signal.data_path))?;
+            let accounts: serde_json::Value = serde_json::from_str(&accounts_json)
+                .context("accounts.json is not valid JSON")?;
+            accounts["accounts"]
+                .get(0)
+                .and_then(|v| v.get("number"))
+                .and_then(|v| v.as_str())
+                .context("Could not find accounts[0].number in accounts.json - check the file structure")?
+                .to_string()
+        }
+    };
 
-    let (signal_client, mut rx) = match signal::SignalClient::new(&signal_phone).await {
+    let (signal_client, mut rx) = match signal::SignalClient::new(&signal_phone, &config.signal.data_path).await {
         Ok(res) => {
             info!("SignalClient initialized for {}", res.0.user_phone());
             res
@@ -60,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
     // Initialize Session Manager
     // Reuse the phone number we got earlier for the signal client
     let bot_number = signal_phone.clone();
-    let session_manager = bot::SessionManager::new(signal_client, ai_client, bot_number, profile_manager);
+    let session_manager = bot::SessionManager::new(signal_client, ai_client, bot_number, profile_manager, config.clone());
 
     // Event Loop with Backpressure
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(100));

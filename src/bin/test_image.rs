@@ -1,15 +1,16 @@
 use dotenv::dotenv;
-use std::env;
+use std::sync::Arc;
 
-use piotr::ai;
+use piotr::{ai, config::AppConfig};
+use anyhow::Context;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    let project_id = env::var("GCP_PROJECT_ID").expect("GCP_PROJECT_ID must be set for this test");
-    let client = ai::VertexClient::new(&project_id);
+    let config = Arc::new(AppConfig::load().context("Failed to load configuration")?);
+    let client = ai::VertexClient::new(config);
 
     println!("Testing Image Generation with imagen-4.0-generate-001...");
     match client.generate_image("A cute robot holding a flower, high quality", "imagen-4.0-generate-001").await {

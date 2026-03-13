@@ -26,10 +26,11 @@ pub struct SessionManager {
     bot_number: String,
     memory: Memory,
     profile_manager: DbProfileManager,
+    config: std::sync::Arc<crate::config::AppConfig>,
 }
 
 impl SessionManager {
-    pub fn new(signal_client: SignalClient, ai_client: VertexClient, bot_number: String, profile_manager: DbProfileManager) -> Self {
+    pub fn new(signal_client: SignalClient, ai_client: VertexClient, bot_number: String, profile_manager: DbProfileManager, config: std::sync::Arc<crate::config::AppConfig>) -> Self {
         Self {
             signal_client,
             ai_client,
@@ -37,6 +38,7 @@ impl SessionManager {
             bot_number,
             memory: Memory::new("data/learned_behaviors.json"),
             profile_manager,
+            config,
         }
     }
 
@@ -251,8 +253,8 @@ impl SessionManager {
         }
     }
 
-    async fn generate_image_response(&self, intent: &str, prompt: &str) -> BotResponse {
-        let model = if intent == "IMAGE_4" { "imagen-4.0-generate-001" } else { "imagen-3.0-generate-001" };
+    async fn generate_image_response(&self, _intent: &str, prompt: &str) -> BotResponse {
+        let model = &self.config.ai.models.imagen;
         info!("Attempting to generate image with model: {} for prompt", model);
 
         match self.ai_client.generate_image(prompt, model).await {
@@ -279,11 +281,11 @@ impl SessionManager {
         let (model_id, use_search) = if let Some(ref m) = override_model {
              (m.clone(), false) // Disable search by default for overrides
         } else if intent == "SEARCH" {
-            ("gemini-3-flash-preview".to_string(), true)
+            (self.config.ai.models.classification.clone(), true)
         } else if intent == "PRO" {
-            ("gemini-3-pro-preview".to_string(), false)
+            (self.config.ai.models.chat.clone(), false)
         } else {
-            ("gemini-3-flash-preview".to_string(), false)
+            (self.config.ai.models.classification.clone(), false)
         };
 
         // Clone history to Vec for API (Snapshot)
@@ -546,7 +548,7 @@ impl SessionManager {
 
         let history_snapshot = self.state.get_history_snapshot(context_key).await;
 
-        match self.ai_client.count_tokens(history_snapshot, "gemini-3-flash-preview").await {
+        match self.ai_client.count_tokens(history_snapshot, &self.config.ai.models.classification).await {
            Ok(count) => {
                if count > TOKEN_LIMIT {
                    info!("Context window for {} is full ({} tokens > {}). Pruning...", crate::utils::anonymize(context_key), count, TOKEN_LIMIT);
@@ -630,9 +632,10 @@ mod tests {
         // but it proves the system doesn't crash on injection.
         // SignalClient::new returns a Result<(SignalClient, Receiver)>
         let signal_client = SignalClient::new_dummy();
-        let ai_client = VertexClient::new("dummy");
+        let config = std::sync::Arc::new(crate::config::AppConfig::default());
+        let ai_client = VertexClient::new(config.clone());
 
-        let manager = SessionManager::new(signal_client, ai_client, "dummy".to_string(), profile_manager);
+        let manager = SessionManager::new(signal_client, ai_client, "dummy".to_string(), profile_manager, config);
         let ctx = "test_context";
 
         // 1. Valid commands
