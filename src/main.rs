@@ -67,7 +67,8 @@ async fn main() -> anyhow::Result<()> {
     let session_manager = bot::SessionManager::new(signal_client, ai_client, bot_number, profile_manager, config.clone());
 
     // Event Loop with Backpressure
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(100));
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(config.performance.max_concurrent_requests));
+    let timeout_secs = config.performance.message_processing_timeout_secs;
 
     while let Some(msg) = rx.recv().await {
         if let Some(source) = msg.envelope.as_ref().map(|e| &e.source) {
@@ -101,13 +102,14 @@ async fn main() -> anyhow::Result<()> {
                  let _permit = permit;
 
                  let result = tokio::time::timeout(
-                     Duration::from_secs(60),
+                     Duration::from_secs(timeout_secs),
                      sm.handle_message(envelope)
                  ).await;
 
                  if let Err(_) = result {
                      error!(
-                         "Message processing timed out after 60 seconds (Source: {}, TS: {})",
+                         "Message processing timed out after {} seconds (Source: {}, TS: {})",
+                         timeout_secs,
                          utils::anonymize(&source_for_closure),
                          ts
                      );
