@@ -428,15 +428,26 @@ mod tests {
         let raw_id = "+15555550000";
         let profile_id = DbProfileManager::get_profile_id(raw_id);
 
-        // Simple JSON payload for round-trip testing.
-        let profile_data = r#"{"name":"Alice","tier":"test"}"#;
+        // Create a UserProfile for round-trip testing.
+        let profile = UserProfile {
+            id: profile_id.clone(),
+            name: Some("Alice".to_string()),
+            nickname: None,
+            personality_summary: "Test profile".to_string(),
+            interaction_style: "testing".to_string(),
+            topics_of_interest: vec!["rust".to_string()],
+            last_updated: 1234567890,
+        };
 
         // Save the profile and then read it back.
-        manager.save_profile(&profile_id, profile_data).await.unwrap();
-        let loaded = manager.get_profile(&profile_id).await.unwrap()
-            .expect("profile should exist after save");
+        manager.save_profile(&profile).await.unwrap();
+        let loaded = manager.get_profile(raw_id, None).await.unwrap();
 
-        assert_eq!(loaded, profile_data, "loaded profile does not match saved data");
+        assert_eq!(loaded.id, profile.id, "loaded profile ID does not match");
+        assert_eq!(loaded.name, profile.name, "loaded profile name does not match");
+        assert_eq!(loaded.personality_summary, profile.personality_summary, "loaded profile personality does not match");
+        assert_eq!(loaded.interaction_style, profile.interaction_style, "loaded profile style does not match");
+        assert_eq!(loaded.topics_of_interest, profile.topics_of_interest, "loaded profile topics do not match");
     }
 
     #[tokio::test]
