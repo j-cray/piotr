@@ -682,17 +682,6 @@ mod tests {
         assert!(pref.is_some());
     }
 
-    #[test]
-    fn test_token_limit_arithmetic_strictly() {
-        let max = 1_000_000_f64;
-        let limit = max * 0.95;
-        let token_limit = limit as i32;
-        assert_eq!(token_limit, 950_000);
-
-        // Ensure arithmetic didn't overflow or undercalculate causing safety risks
-        assert!(token_limit > 900_000);
-        assert!(token_limit < 1_000_000);
-    }
 
     #[test]
     fn test_sanitize_display_name_strictly() {
