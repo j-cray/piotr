@@ -55,7 +55,7 @@ impl Memory {
             });
         }
 
-        self.save(&guard)?;
+        self.save(&guard).await?;
         Ok(())
     }
 
