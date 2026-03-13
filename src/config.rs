@@ -19,16 +19,30 @@ impl AppConfig {
     pub fn load() -> Result<Self> {
         let local_config = Path::new("config.json5");
         
+        let config_dir = std::env::var("XDG_CONFIG_HOME")
+            .unwrap_or_else(|_| {
+                let home = std::env::var("HOME").expect("HOME environment variable not set");
+                format!("{}/.config", home)
+            });
+        let fallback_config = PathBuf::from(config_dir).join("piotr").join("config.json5");
+
         let config_path = if local_config.exists() {
             PathBuf::from(local_config)
+        } else if fallback_config.exists() {
+            fallback_config
         } else {
-            // Fallback configuration path: ~/.config/piotr/config.json5
-            let config_dir = std::env::var("XDG_CONFIG_HOME")
-                .unwrap_or_else(|_| {
-                    let home = std::env::var("HOME").expect("HOME environment variable not set");
-                    format!("{}/.config", home)
-                });
-            PathBuf::from(config_dir).join("piotr").join("config.json5")
+            // Neither exists. Scaffold the default configuration on first boot.
+            if let Some(parent) = fallback_config.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| anyhow::anyhow!("Failed to create config directory {:?}: {}", parent, e))?;
+            }
+            
+            let default_config_content = include_str!("../config.example.json5");
+            std::fs::write(&fallback_config, default_config_content)
+                .map_err(|e| anyhow::anyhow!("Failed to write default config to {:?}: {}", fallback_config, e))?;
+            
+            println!("No configuration found. A default configuration template has been generated at {:?}", fallback_config);
+            fallback_config
         };
         
         Self::load_from(&config_path)
