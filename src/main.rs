@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Initialize AI client
-    let project_id = std::env::var("GCP_PROJECT_ID").unwrap_or_else(|_| "piotr-487123".to_string());
+    let project_id = std::env::var("GCP_PROJECT_ID").context("GCP_PROJECT_ID must be set")?;
     let ai_client = ai::VertexClient::new(&project_id);
 
     // Initialize Signal service - Auto-detect linked number
