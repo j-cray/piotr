@@ -17,14 +17,20 @@ use regex::Regex;
 
 impl AppConfig {
     pub fn load() -> Result<Self> {
-        // Find configuration path: ~/.config/piotr/config.json5
-        let config_dir = std::env::var("XDG_CONFIG_HOME")
-            .unwrap_or_else(|_| {
-                let home = std::env::var("HOME").expect("HOME environment variable not set");
-                format!("{}/.config", home)
-            });
+        let local_config = Path::new("config.json5");
         
-        let config_path = PathBuf::from(config_dir).join("piotr").join("config.json5");
+        let config_path = if local_config.exists() {
+            PathBuf::from(local_config)
+        } else {
+            // Fallback configuration path: ~/.config/piotr/config.json5
+            let config_dir = std::env::var("XDG_CONFIG_HOME")
+                .unwrap_or_else(|_| {
+                    let home = std::env::var("HOME").expect("HOME environment variable not set");
+                    format!("{}/.config", home)
+                });
+            PathBuf::from(config_dir).join("piotr").join("config.json5")
+        };
+        
         Self::load_from(&config_path)
     }
 
