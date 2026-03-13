@@ -797,6 +797,11 @@ mod tests {
             Ok(c) => Arc::new(c),
             Err(_) => return,
         };
+        // Skip live tests if using placeholder config
+        if config.ai.gcp_project_id == "your-gcp-project-id" {
+            println!("Skipping live test: real GCP Project ID not configured");
+            return;
+        }
         let client = VertexClient::new(config);
 
         let contents = vec![Content {
@@ -821,6 +826,11 @@ mod tests {
             Ok(c) => Arc::new(c),
             Err(_) => return,
         };
+        // Skip live tests if using placeholder config
+        if config.ai.gcp_project_id == "your-gcp-project-id" {
+            println!("Skipping live test: real GCP Project ID not configured");
+            return;
+        }
         let client = VertexClient::new(config);
 
         // Test 1: Direct invocation
