@@ -187,8 +187,8 @@ impl VertexClient {
             },
             "contents": contents,
             "generationConfig": {
-                "temperature": model.temperature.unwrap_or(0.5),
-                "maxOutputTokens": model.max_output_tokens.unwrap_or(8192)
+                "temperature": model.temperature.unwrap_or(crate::config::DEFAULT_CHAT_TEMPERATURE),
+                "maxOutputTokens": model.max_output_tokens.unwrap_or(crate::config::DEFAULT_CHAT_MAX_OUTPUT_TOKENS)
             }
         });
 
@@ -342,8 +342,8 @@ impl VertexClient {
             },
             "contents": contents,
             "generationConfig": {
-                "temperature": self.config.ai.models.classification.temperature.unwrap_or(0.0),
-                "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(256)
+                "temperature": self.config.ai.models.classification.temperature.unwrap_or(crate::config::DEFAULT_CLASSIFICATION_TEMPERATURE),
+                "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(crate::config::DEFAULT_CLASSIFICATION_MAX_OUTPUT_TOKENS)
             }
         });
 
@@ -430,8 +430,8 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
             },
             "contents": contents,
             "generationConfig": {
-                "temperature": self.config.ai.models.classification.temperature.unwrap_or(0.2), // Low temp for analysis
-                "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(512),
+                "temperature": self.config.ai.models.classification.temperature.unwrap_or(crate::config::DEFAULT_REACTION_ANALYSIS_TEMPERATURE), // Low temp for analysis
+                "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(crate::config::DEFAULT_REACTION_ANALYSIS_MAX_OUTPUT_TOKENS),
                 "responseMimeType": "application/json"
             }
         });
@@ -537,8 +537,8 @@ Structure:
             },
             "contents": contents,
             "generationConfig": {
-                "temperature": self.config.ai.models.classification.temperature.unwrap_or(0.1),
-                "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(1024),
+                "temperature": self.config.ai.models.classification.temperature.unwrap_or(crate::config::DEFAULT_PROFILE_UPDATE_TEMPERATURE),
+                "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(crate::config::DEFAULT_PROFILE_UPDATE_MAX_OUTPUT_TOKENS),
                 "responseMimeType": "application/json"
             }
         });
@@ -643,8 +643,8 @@ Structure:
             },
             "contents": contents,
             "generationConfig": {
-                "temperature": self.config.ai.models.classification.temperature.unwrap_or(0.2), // Slightly higher than user profile for capturing "vibes"
-                "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(2048),
+                "temperature": self.config.ai.models.classification.temperature.unwrap_or(crate::config::DEFAULT_GROUP_PROFILE_UPDATE_TEMPERATURE), // Slightly higher than user profile for capturing "vibes"
+                "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(crate::config::DEFAULT_GROUP_PROFILE_UPDATE_MAX_OUTPUT_TOKENS),
                 "responseMimeType": "application/json"
             }
         });

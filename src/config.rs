@@ -1,6 +1,21 @@
 use serde::Deserialize;
 use anyhow::Result;
 
+pub const DEFAULT_CHAT_TEMPERATURE: f32 = 0.5;
+pub const DEFAULT_CHAT_MAX_OUTPUT_TOKENS: i32 = 8192;
+
+pub const DEFAULT_CLASSIFICATION_TEMPERATURE: f32 = 0.0;
+pub const DEFAULT_CLASSIFICATION_MAX_OUTPUT_TOKENS: i32 = 256;
+
+pub const DEFAULT_REACTION_ANALYSIS_TEMPERATURE: f32 = 0.2;
+pub const DEFAULT_REACTION_ANALYSIS_MAX_OUTPUT_TOKENS: i32 = 512;
+
+pub const DEFAULT_PROFILE_UPDATE_TEMPERATURE: f32 = 0.1;
+pub const DEFAULT_PROFILE_UPDATE_MAX_OUTPUT_TOKENS: i32 = 1024;
+
+pub const DEFAULT_GROUP_PROFILE_UPDATE_TEMPERATURE: f32 = 0.2;
+pub const DEFAULT_GROUP_PROFILE_UPDATE_MAX_OUTPUT_TOKENS: i32 = 2048;
+
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
