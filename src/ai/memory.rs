@@ -270,9 +270,9 @@ impl DbProfileManager {
                         let content = fs::read_to_string(&path)?;
                         match serde_json::from_str::<UserProfile>(&content) {
                             Ok(profile) => {
-                                log::info!("Migrating profile for {}", profile.id);
+                                tracing::info!("Migrating profile for {}", profile.id);
                                 if let Err(e) = self.save_profile(&profile).await {
-                                    log::error!("Failed to migrate profile {}: {:?}", profile.id, e);
+                                    tracing::error!("Failed to migrate profile {}: {:?}", profile.id, e);
                                 } else {
                                     // Rename to .imported
                                     let new_path = path.with_extension("json.imported");
@@ -280,7 +280,7 @@ impl DbProfileManager {
                                 }
                             }
                             Err(e) => {
-                                log::error!("Failed to parse profile {:?}: {:?}", path, e);
+                                tracing::error!("Failed to parse profile {:?}: {:?}", path, e);
                             }
                         }
                     }

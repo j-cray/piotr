@@ -167,7 +167,7 @@ impl SignalClient {
             while let Some(payload) = rx_in.recv().await {
                 if let Ok(payload_str) = serde_json::to_string(&payload) {
                     info!("Sending Signal RPC");
-                    log::debug!("Sending Signal RPC payload: [REDACTED]");
+                    tracing::debug!("Sending Signal RPC payload: [REDACTED]");
                     if stdin.write_all(payload_str.as_bytes()).await.is_err() {
                         break;
                     }
@@ -189,7 +189,7 @@ impl SignalClient {
             while let Ok(Some(line)) = lines.next_line().await {
                 if line.trim().is_empty() { continue; }
 
-                log::debug!("Raw Signal Line received");
+                tracing::debug!("Raw Signal Line received");
 
                 if let Ok(rpc) = serde_json::from_str::<JsonRpcNotification>(&line) {
                      if rpc.method == "receive" {

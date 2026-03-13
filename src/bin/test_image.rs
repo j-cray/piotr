@@ -6,7 +6,7 @@ use piotr::ai;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv().ok();
-    env_logger::init();
+    tracing_subscriber::fmt::init();
 
     let project_id = env::var("GCP_PROJECT_ID").expect("GCP_PROJECT_ID must be set for this test");
     let client = ai::VertexClient::new(&project_id);

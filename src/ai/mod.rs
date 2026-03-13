@@ -211,7 +211,7 @@ impl VertexClient {
                 let response: GenerateContentResponse = match serde_json::from_str(&resp_text) {
                     Ok(r) => r,
                     Err(e) => {
-                         log::error!("Failed to parse Vertex AI response: {}. Raw text length: {}", e, resp_text.len());
+                         tracing::error!("Failed to parse Vertex AI response: {}. Raw text length: {}", e, resp_text.len());
                          return Ok("I ... I don't know what happened. The wires... they crossed.".to_string());
                     }
                 };
@@ -221,7 +221,7 @@ impl VertexClient {
                          // Check for finishReason
                          if let Some(reason) = &first.finish_reason {
                              if reason != "STOP" {
-                                 log::warn!("Vertex AI finishReason: {}. Safety ratings: {:?}", reason, first.safety_ratings);
+                                 tracing::warn!("Vertex AI finishReason: {}. Safety ratings: {:?}", reason, first.safety_ratings);
                                  if reason == "SAFETY" || reason == "RECITATION" {
                                      return Ok(format!("I cannot answer that. Google says no ({})", reason));
                                  }
@@ -239,7 +239,7 @@ impl VertexClient {
                 }
 
                 // Fallback if structure is oddly empty even with success
-                log::warn!("Vertex AI returned success but no content found.");
+                tracing::warn!("Vertex AI returned success but no content found.");
                 return Ok("I have nothing to say about that.".to_string());
 
             } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
@@ -249,7 +249,7 @@ impl VertexClient {
                     anyhow::bail!("Vertex AI Error after retries: {} - {}", status, error_text);
                 }
                 let wait = Duration::from_secs(2u64.pow(retries));
-                log::warn!("Vertex AI request failed ({}), retrying in {:?}...", status, wait);
+                tracing::warn!("Vertex AI request failed ({}), retrying in {:?}...", status, wait);
                 tokio::time::sleep(wait).await;
                 continue;
             } else {
@@ -308,7 +308,7 @@ impl VertexClient {
                      anyhow::bail!("Vertex AI Imagen Error after retries: {} - {}", status, error_text);
                  }
                  let wait = Duration::from_secs(2u64.pow(retries));
-                 log::warn!("Vertex AI Imagen request failed ({}), retrying in {:?}...", status, wait);
+                 tracing::warn!("Vertex AI Imagen request failed ({}), retrying in {:?}...", status, wait);
                  tokio::time::sleep(wait).await;
                  continue;
             } else {
@@ -319,7 +319,7 @@ impl VertexClient {
     }
 
     pub async fn classify_intent(&self, prompt: &str) -> Result<String> {
-        log::info!("Classifying intent for prompt");
+        tracing::info!("Classifying intent for prompt");
         let contents = vec![Content {
             role: "user".to_string(),
             parts: vec![Part { text: Some(prompt.to_string()) }],
@@ -370,7 +370,7 @@ impl VertexClient {
              } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
                  retries += 1;
                  if retries > 3 {
-                      log::error!("Intent classification failed after retries: {}", status);
+                      tracing::error!("Intent classification failed after retries: {}", status);
                       return Ok("FLASH".to_string()); // Fail open to default
                  }
                  let wait = Duration::from_millis(500 * 2u64.pow(retries));
@@ -378,7 +378,7 @@ impl VertexClient {
                  continue;
              } else {
                  // Non-retryable error
-                 log::error!("Intent classification failed non-retryable: {}", status);
+                 tracing::error!("Intent classification failed non-retryable: {}", status);
                  return Ok("FLASH".to_string());
              }
         }
@@ -453,7 +453,7 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
                                     match serde_json::from_str::<ReactionAnalysis>(text) {
                                         Ok(analysis) => return Ok(analysis),
                                         Err(e) => {
-                                            log::error!("Failed to parse analysis JSON: {}. Text length: {}", e, text.len());
+                                            tracing::error!("Failed to parse analysis JSON: {}. Text length: {}", e, text.len());
                                             // Fallback
                                             return Ok(ReactionAnalysis {
                                                 sentiment_score: 0.0,
@@ -562,7 +562,7 @@ Structure:
                                             return Ok(profile);
                                         },
                                         Err(e) => {
-                                            log::error!("Failed to parse profile update JSON: {}. Text length: {}", e, text.len());
+                                            tracing::error!("Failed to parse profile update JSON: {}. Text length: {}", e, text.len());
                                             // Fail safe: return original
                                             return Ok(current_profile.clone());
                                         }
@@ -667,7 +667,7 @@ Structure:
                                             return Ok(profile);
                                         },
                                         Err(e) => {
-                                            log::error!("Failed to parse group profile update JSON: {}. Text length: {}", e, text.len());
+                                            tracing::error!("Failed to parse group profile update JSON: {}. Text length: {}", e, text.len());
                                             // Fail safe: return original
                                             return Ok(current_profile.clone());
                                         }
