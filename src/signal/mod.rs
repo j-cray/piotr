@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -115,9 +117,13 @@ pub struct GroupInfo {
 pub struct SignalClient {
     user_phone: String,
     tx: mpsc::Sender<Value>,
+    next_request_id: Arc<AtomicUsize>,
 }
 
 impl SignalClient {
+    fn next_id(&self) -> String {
+        self.next_request_id.fetch_add(1, Ordering::SeqCst).to_string()
+    }
     pub fn user_phone(&self) -> &str {
         &self.user_phone
     }
@@ -128,6 +134,7 @@ impl SignalClient {
         Self {
             user_phone: "dummy".to_string(),
             tx,
+            next_request_id: Arc::new(AtomicUsize::new(1)),
         }
     }
 
@@ -215,6 +222,7 @@ impl SignalClient {
         Ok((Self {
             user_phone: user_phone.to_string(),
             tx: tx_in,
+            next_request_id: Arc::new(AtomicUsize::new(1)),
         }, rx_out))
     }
 
@@ -241,7 +249,7 @@ impl SignalClient {
             "jsonrpc": "2.0",
             "method": "send",
             "params": params,
-            "id": "1"
+            "id": self.next_id()
         });
 
         self.send_payload(&payload).await
@@ -256,7 +264,7 @@ impl SignalClient {
                 "targetTimestamp": target_timestamp,
                 "type": "read"
             },
-            "id": "2"
+            "id": self.next_id()
         });
 
         self.send_payload(&payload).await
@@ -273,7 +281,7 @@ impl SignalClient {
             "jsonrpc": "2.0",
             "method": "sendTyping",
             "params": params,
-            "id": "3"
+            "id": self.next_id()
         });
 
         self.send_payload(&payload).await
@@ -290,7 +298,7 @@ impl SignalClient {
             "jsonrpc": "2.0",
             "method": "sendTyping",
             "params": params,
-            "id": "4"
+            "id": self.next_id()
         });
 
         self.send_payload(&payload).await
