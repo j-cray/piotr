@@ -257,7 +257,7 @@ impl SessionManager {
                 // Use a random suffix to avoid filename collisions even if clock is unusual
                 let suffix = rand::rng().random::<u64>();
                 let filename = format!("/tmp/piotr_img_{}.png", suffix);
-                if let Err(e) = std::fs::write(&filename, image_bytes) {
+                if let Err(e) = tokio::fs::write(&filename, image_bytes).await {
                     error!("Failed to write image to temp file: {:?}", e);
                     BotResponse::Error("I tried to draw something but my pencil broke (write error).".to_string())
                 } else {
@@ -519,7 +519,7 @@ impl SessionManager {
                                 }
                                 // Cleanup image after sending
                                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                                let _ = std::fs::remove_file(&filename);
+                                let _ = tokio::fs::remove_file(&filename).await;
                             },
                             BotResponse::Error(err_msg) => {
                                 let _ = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), &err_msg, None).await;
