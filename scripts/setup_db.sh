@@ -135,4 +135,10 @@ else
     echo "Added DATABASE_URL to .env"
 fi
 
+if ! grep -q "ANONYMIZE_KEY" .env; then
+    echo "Generating new anonymization key..."
+    echo "ANONYMIZE_KEY=$(openssl rand -hex 16)" >> .env
+    echo "Added ANONYMIZE_KEY to .env"
+fi
+
 echo "Setup complete! Run 'cargo run --bin piotr' to start the application."
