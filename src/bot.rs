@@ -342,7 +342,7 @@ impl SessionManager {
         }
     }
 
-    if !override_model.is_some() {
+    if override_model.is_none() {
              // Retrieve relevant examples (simple latest/best for now)
              let examples = self.memory.get_relevant_examples("", 3).await;
              if !examples.is_empty() {
