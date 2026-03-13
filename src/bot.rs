@@ -71,9 +71,6 @@ impl SessionManager {
                 };
                 self.state.add_user_message(&context_key, user_content).await;
 
-                // Manage Context Window (Async, non-blocking to other contexts)
-                self.manage_context_window(&context_key).await;
-
                 let text_lower = text.trim().to_lowercase();
 
                 // 2. Check for Commands
@@ -416,6 +413,14 @@ impl SessionManager {
 
                     let response = if let Some(model) = model_override {
                         info!("Using override model: {}", model);
+                        let model_cfg = if model == self_clone_seq.config.ai.models.chat.name {
+                            &self_clone_seq.config.ai.models.chat
+                        } else if model == self_clone_seq.config.ai.models.imagen.name {
+                            &self_clone_seq.config.ai.models.imagen
+                        } else {
+                            &self_clone_seq.config.ai.models.classification
+                        };
+                        self_clone_seq.manage_context_window(&context_key_seq, model_cfg).await;
                         self_clone_seq.generate_text_response("OVERRIDE", &context_key_seq, &request.profile_key, request.source_name.clone(), Some(model), group_id_context.clone()).await
                     } else {
                         // Intent Classification (Auto Mode)
@@ -441,6 +446,12 @@ impl SessionManager {
                             // Returning an empty text avoids the signal send logic below
                             BotResponse::Error(String::new())
                         } else {
+                            let model_cfg = if intent == "PRO" {
+                                &self_clone_seq.config.ai.models.chat
+                            } else {
+                                &self_clone_seq.config.ai.models.classification
+                            };
+                            self_clone_seq.manage_context_window(&context_key_seq, model_cfg).await;
                             self_clone_seq.generate_text_response(&intent, &context_key_seq, &request.profile_key, request.source_name.clone(), None, group_id_context.clone()).await
                         }
                     };
@@ -538,22 +549,24 @@ impl SessionManager {
         }
     }
 
-    async fn manage_context_window(&self, context_key: &str) {
-        if self.state.get_history_len(context_key).await < 30 {
+    async fn manage_context_window(&self, context_key: &str, model_settings: &crate::config::ModelSettings) {
+        let current_len = self.state.get_history_len(context_key).await;
+        if current_len < 30 {
             return;
         }
 
         let history_snapshot = self.state.get_history_snapshot(context_key).await;
 
-        let max_tokens = self.config.ai.models.classification.max_input_tokens.unwrap_or(1_000_000);
+        let max_tokens = model_settings.max_input_tokens.unwrap_or(1_000_000);
         let token_limit = (max_tokens as f32 * 0.95) as i32;
 
-        match self.ai_client.count_tokens(history_snapshot, &self.config.ai.models.classification).await {
+        match self.ai_client.count_tokens(history_snapshot, model_settings).await {
            Ok(count) => {
                if count > token_limit {
                    info!("Context window for {} is full ({} tokens > {}). Pruning...", crate::utils::anonymize(context_key), count, token_limit);
-                   if self.state.get_history_len(context_key).await > 4 {
-                       self.state.prune_history(context_key, 4).await;
+                   let to_remove = Self::calculate_prune_amount(current_len, count, token_limit);
+                   if current_len > to_remove {
+                       self.state.prune_history(context_key, to_remove).await;
                    } else {
                        self.state.clear_history(context_key).await;
                    }
@@ -561,6 +574,23 @@ impl SessionManager {
            },
            Err(e) => error!("Failed to count tokens for {}: {:?}", crate::utils::anonymize(context_key), e)
         }
+    }
+
+    fn calculate_prune_amount(current_len: usize, current_tokens: i32, token_limit: i32) -> usize {
+        if current_tokens <= token_limit {
+            return 0;
+        }
+
+        let excess_tokens = (current_tokens - token_limit) as f32;
+        let avg_tokens_per_msg = current_tokens as f32 / current_len as f32;
+        let mut to_remove_estimate = (excess_tokens / avg_tokens_per_msg).ceil() as usize;
+
+        if to_remove_estimate == 0 {
+            to_remove_estimate = 4;
+        }
+        
+        // Ensure we don't return more than current_len
+        to_remove_estimate.min(current_len)
     }
 }
 
@@ -656,11 +686,12 @@ mod tests {
     fn test_token_limit_arithmetic_strictly() {
         let max = 1_000_000_f64;
         let limit = max * 0.95;
-        assert_eq!(limit as i32, TOKEN_LIMIT);
+        let token_limit = limit as i32;
+        assert_eq!(token_limit, 950_000);
 
         // Ensure arithmetic didn't overflow or undercalculate causing safety risks
-        assert!(TOKEN_LIMIT > 900_000);
-        assert!(TOKEN_LIMIT < 1_000_000);
+        assert!(token_limit > 900_000);
+        assert!(token_limit < 1_000_000);
     }
 
     #[test]
@@ -670,5 +701,28 @@ mod tests {
         assert_eq!(sanitize_display_name("Name\" Hack"), "Name\\\" Hack");
         assert_eq!(sanitize_display_name("Line1\r\nLine2"), "Line1 Line2");
         assert_eq!(sanitize_display_name("Emoji 😈\n\r\"Test\""), "Emoji 😈 \\\"Test\\\"");
+    }
+
+    #[test]
+    fn test_calculate_prune_amount() {
+        // Base case: 1000 tokens limit, currently at 1200 tokens across 60 messages
+        // Avg tokens per msg = 20. Excess = 200. Should remove exactly 10.
+        assert_eq!(SessionManager::calculate_prune_amount(60, 1200, 1000), 10);
+        
+        // Case: ceiling rounds up correctly.
+        // 1000 limit, 1050 tokens, 30 msgs
+        // Avg tokens per msg = 35. Excess = 50. 50/35 = 1.42. Should prune 2.
+        assert_eq!(SessionManager::calculate_prune_amount(30, 1050, 1000), 2);
+
+        // Case: No pruning needed
+        assert_eq!(SessionManager::calculate_prune_amount(50, 900, 1000), 0);
+        assert_eq!(SessionManager::calculate_prune_amount(50, 1000, 1000), 0);
+
+        // Case: Pruning estimate ends up being 0 somehow (e.g. extremely small excess rounded down?).
+        // 1000 limit, 1001 tokens, 100 msgs. Avg = 10.01 per msg. Excess = 1. 1/10.01 = 0.099 -> ceil() -> 1.
+        assert_eq!(SessionManager::calculate_prune_amount(100, 1001, 1000), 1);
+
+        // Case: Pruning more than available
+        assert_eq!(SessionManager::calculate_prune_amount(5, 5000, 1000), 5);
     }
 }
