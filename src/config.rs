@@ -17,7 +17,7 @@ pub const DEFAULT_GROUP_PROFILE_UPDATE_TEMPERATURE: f32 = 0.2;
 pub const DEFAULT_GROUP_PROFILE_UPDATE_MAX_OUTPUT_TOKENS: i32 = 2048;
 
 #[derive(Debug, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct AppConfig {
     pub database: DatabaseConfig,
     pub security: SecurityConfig,
@@ -248,37 +248,95 @@ impl AppConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase", default)]
 pub struct DatabaseConfig {
     pub url: String,
 }
 
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        Self {
+            url: "sqlite://data/piotr.db".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct SecurityConfig {
     pub profile_encryption_key: String,
     pub anonymize_key: String,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase", default)]
 pub struct AiConfig {
     pub gcp_project_id: String,
     pub gcp_location: String,
     pub models: AiModelsConfig,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            gcp_project_id: String::new(),
+            gcp_location: "us-central1".to_string(),
+            models: AiModelsConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase", default)]
 pub struct AiModelsConfig {
+    #[serde(default = "default_chat_model")]
     pub chat: ModelSettings,
+    #[serde(default = "default_classification_model")]
     pub classification: ModelSettings,
+    #[serde(default = "default_imagen_model")]
     pub imagen: ModelSettings,
 }
 
+impl Default for AiModelsConfig {
+    fn default() -> Self {
+        Self {
+            chat: default_chat_model(),
+            classification: default_classification_model(),
+            imagen: default_imagen_model(),
+        }
+    }
+}
+
+fn default_chat_model() -> ModelSettings {
+    ModelSettings {
+        name: "gemini-3-pro-preview".to_string(),
+        temperature: Some(DEFAULT_CHAT_TEMPERATURE),
+        max_output_tokens: Some(DEFAULT_CHAT_MAX_OUTPUT_TOKENS),
+        max_input_tokens: Some(1000000),
+    }
+}
+
+fn default_classification_model() -> ModelSettings {
+    ModelSettings {
+        name: "gemini-3-flash-preview".to_string(),
+        temperature: Some(DEFAULT_CLASSIFICATION_TEMPERATURE),
+        max_output_tokens: Some(DEFAULT_CLASSIFICATION_MAX_OUTPUT_TOKENS),
+        max_input_tokens: Some(1000000),
+    }
+}
+
+fn default_imagen_model() -> ModelSettings {
+    ModelSettings {
+        name: "imagen-3.0-generate-001".to_string(),
+        temperature: None,
+        max_output_tokens: None,
+        max_input_tokens: None,
+    }
+}
+
 #[derive(Debug, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct ModelSettings {
     pub name: String,
     pub temperature: Option<f32>,
@@ -286,28 +344,58 @@ pub struct ModelSettings {
     pub max_input_tokens: Option<i32>,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase", default)]
 pub struct SignalConfig {
     pub phone_number: Option<String>,
     pub data_path: String,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+impl Default for SignalConfig {
+    fn default() -> Self {
+        Self {
+            phone_number: None,
+            data_path: "data/signal-cli".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase", default)]
 pub struct PerformanceConfig {
     pub max_concurrent_requests: usize,
     pub message_processing_timeout_secs: u64,
     pub api_cooldown_ms: u64,
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+impl Default for PerformanceConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent_requests: 10,
+            message_processing_timeout_secs: 30,
+            api_cooldown_ms: 1500,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase", default)]
 pub struct BotConfig {
     pub name: String,
     pub location: String,
     pub system_prompt: String,
     pub target_message_length_chars: usize,
+}
+
+impl Default for BotConfig {
+    fn default() -> Self {
+        Self {
+            name: "Piotr".to_string(),
+            location: "Unknown".to_string(),
+            system_prompt: "Helpful and witty AI assistant".to_string(),
+            target_message_length_chars: 1000,
+        }
+    }
 }
 
 #[cfg(test)]

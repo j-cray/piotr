@@ -762,7 +762,7 @@ mod tests {
             Err(_) => return,
         };
         // Skip live tests if using placeholder config
-        if config.ai.gcp_project_id == "your-gcp-project-id" {
+        if config.ai.gcp_project_id.is_empty() || config.ai.gcp_project_id == "your-gcp-project-id" {
             println!("Skipping live test: real GCP Project ID not configured");
             return;
         }
@@ -790,8 +790,7 @@ mod tests {
             Ok(c) => Arc::new(c),
             Err(_) => return,
         };
-        // Skip live tests if using placeholder config
-        if config.ai.gcp_project_id == "your-gcp-project-id" {
+        if config.ai.gcp_project_id.is_empty() || config.ai.gcp_project_id == "your-gcp-project-id" {
             println!("Skipping live test: real GCP Project ID not configured");
             return;
         }
