@@ -248,22 +248,23 @@ pub struct AiConfig {
     pub gcp_project_id: String,
     pub gcp_location: String,
     pub models: AiModelsConfig,
-    pub generation: AiGenerationConfig,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AiModelsConfig {
-    pub chat: String,
-    pub classification: String,
-    pub imagen: String,
+    pub chat: ModelSettings,
+    pub classification: ModelSettings,
+    pub imagen: ModelSettings,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct AiGenerationConfig {
-    pub temperature: f32,
-    pub max_output_tokens: i32,
+pub struct ModelSettings {
+    pub name: String,
+    pub temperature: Option<f32>,
+    pub max_output_tokens: Option<i32>,
+    pub max_input_tokens: Option<i32>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -306,8 +307,11 @@ mod tests {
             ai: {
                 gcpProjectId: "test-proj",
                 gcpLocation: "us-west1",
-                models: { chat: "m1", classification: "m2", imagen: "m3" },
-                generation: { temperature: 0.7, maxOutputTokens: 100 }
+                models: { 
+                    chat: { name: "m1", temperature: 0.7, maxOutputTokens: 100, maxInputTokens: 1000 }, 
+                    classification: { name: "m2" }, 
+                    imagen: { name: "m3" } 
+                }
             },
             signal: { dataPath: "/tmp/signal", phoneNumber: "+1234567890" },
             performance: { maxConcurrentRequests: 5, messageProcessingTimeoutSecs: 10, apiCooldownMs: 500 },
@@ -325,8 +329,10 @@ mod tests {
         assert_eq!(app_config.database.url, "sqlite://test.db");
         assert_eq!(app_config.security.anonymize_key, "def");
         assert_eq!(app_config.ai.gcp_project_id, "test-proj");
-        assert_eq!(app_config.ai.models.chat, "m1");
-        assert_eq!(app_config.ai.generation.temperature, 0.7);
+        assert_eq!(app_config.ai.models.chat.name, "m1");
+        assert_eq!(app_config.ai.models.chat.temperature.unwrap(), 0.7);
+        assert_eq!(app_config.ai.models.chat.max_output_tokens.unwrap(), 100);
+        assert_eq!(app_config.ai.models.chat.max_input_tokens.unwrap(), 1000);
         assert_eq!(app_config.signal.data_path, "/tmp/signal");
         assert_eq!(app_config.signal.phone_number.as_deref(), Some("+1234567890"));
         assert_eq!(app_config.performance.api_cooldown_ms, 500);

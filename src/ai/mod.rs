@@ -175,10 +175,10 @@ impl VertexClient {
         *last = Instant::now();
     }
 
-    pub async fn generate_content(&self, contents: Vec<Content>, model: &str, use_search: bool) -> Result<String> {
+    pub async fn generate_content(&self, contents: Vec<Content>, model: &crate::config::ModelSettings, use_search: bool) -> Result<String> {
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, model
+            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, model.name
         );
 
         let mut body_json = json!({
@@ -187,8 +187,8 @@ impl VertexClient {
             },
             "contents": contents,
             "generationConfig": {
-                "temperature": 0.5,
-                "maxOutputTokens": 8192
+                "temperature": model.temperature.unwrap_or(0.5),
+                "maxOutputTokens": model.max_output_tokens.unwrap_or(8192)
             }
         });
 
@@ -268,11 +268,11 @@ impl VertexClient {
         }
     }
 
-    pub async fn generate_image(&self, prompt: &str, model: &str) -> Result<Vec<u8>> {
+    pub async fn generate_image(&self, prompt: &str, model: &crate::config::ModelSettings) -> Result<Vec<u8>> {
         let location = &self.config.ai.gcp_location;
         let url = format!(
             "https://{}-aiplatform.googleapis.com/v1/projects/{}/locations/{}/publishers/google/models/{}:predict",
-            location, self.config.ai.gcp_project_id, location, model
+            location, self.config.ai.gcp_project_id, location, model.name
         );
 
         let body = json!({
@@ -333,7 +333,7 @@ impl VertexClient {
 
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, self.config.ai.models.classification
+            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, self.config.ai.models.classification.name
         );
 
         let body = json!({
@@ -342,8 +342,8 @@ impl VertexClient {
             },
             "contents": contents,
             "generationConfig": {
-                "temperature": 0.0,
-                "maxOutputTokens": 256
+                "temperature": self.config.ai.models.classification.temperature.unwrap_or(0.0),
+                "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(256)
             }
         });
 
@@ -421,7 +421,7 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
 
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, self.config.ai.models.classification
+            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, self.config.ai.models.classification.name
         );
 
         let body = json!({
@@ -430,7 +430,8 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
             },
             "contents": contents,
             "generationConfig": {
-                "temperature": 0.2, // Low temp for analysis
+                "temperature": self.config.ai.models.classification.temperature.unwrap_or(0.2), // Low temp for analysis
+                "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(512),
                 "responseMimeType": "application/json"
             }
         });
@@ -527,7 +528,7 @@ Structure:
 
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, self.config.ai.models.classification
+            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, self.config.ai.models.classification.name
         );
 
         let body = json!({
@@ -536,7 +537,8 @@ Structure:
             },
             "contents": contents,
             "generationConfig": {
-                "temperature": 0.1,
+                "temperature": self.config.ai.models.classification.temperature.unwrap_or(0.1),
+                "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(1024),
                 "responseMimeType": "application/json"
             }
         });
@@ -632,7 +634,7 @@ Structure:
 
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, self.config.ai.models.classification
+            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, self.config.ai.models.classification.name
         );
 
         let body = json!({
@@ -641,7 +643,8 @@ Structure:
             },
             "contents": contents,
             "generationConfig": {
-                "temperature": 0.2, // Slightly higher than user profile for capturing "vibes"
+                "temperature": self.config.ai.models.classification.temperature.unwrap_or(0.2), // Slightly higher than user profile for capturing "vibes"
+                "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(2048),
                 "responseMimeType": "application/json"
             }
         });
@@ -699,10 +702,10 @@ Structure:
         }
     }
 
-    pub async fn count_tokens(&self, contents: Vec<Content>, model: &str) -> Result<i32> {
+    pub async fn count_tokens(&self, contents: Vec<Content>, model: &crate::config::ModelSettings) -> Result<i32> {
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:countTokens",
-            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, model
+            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, model.name
         );
 
         let body = json!({
@@ -770,7 +773,7 @@ mod tests {
             parts: vec![Part { text: Some("Hello world".to_string()) }]
         }];
 
-        match client.count_tokens(contents, "gemini-3-flash-preview").await {
+        match client.count_tokens(contents, &crate::config::ModelSettings { name: "gemini-3-flash-preview".to_string(), ..Default::default() }).await {
             Ok(count) => {
                 println!("Token count: {}", count);
                 assert!(count > 0);

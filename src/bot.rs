@@ -8,9 +8,6 @@ use crate::signal::{SignalClient, Envelope};
 use std::time::SystemTime;
 
 
-const MODEL_MAX_TOKENS: i32 = 1_000_000; // gemini-3-flash-preview limit
-const TOKEN_LIMIT: i32 = MODEL_MAX_TOKENS * 95 / 100; // 95% of limit
-
 #[derive(Debug)]
 enum BotResponse {
     Text(String),
@@ -255,7 +252,7 @@ impl SessionManager {
 
     async fn generate_image_response(&self, _intent: &str, prompt: &str) -> BotResponse {
         let model = &self.config.ai.models.imagen;
-        info!("Attempting to generate image with model: {} for prompt", model);
+        info!("Attempting to generate image with model: {} for prompt", model.name);
 
         match self.ai_client.generate_image(prompt, model).await {
             Ok(image_bytes) => {
@@ -272,14 +269,14 @@ impl SessionManager {
             },
             Err(e) => {
                 error!("Image generation failed (LOGGED ERROR): {:?}", e);
-                BotResponse::Error(format!("I could not generate that image with {}. I am sorry.", model))
+                BotResponse::Error(format!("I could not generate that image with {}. I am sorry.", model.name))
             }
         }
     }
 
     async fn generate_text_response(&self, intent: &str, context_key: &str, profile_key: &str, source_name: Option<String>, override_model: Option<String>, group_id: Option<String>) -> BotResponse {
-        let (model_id, use_search) = if let Some(ref m) = override_model {
-             (m.clone(), false) // Disable search by default for overrides
+        let (model_config, use_search) = if let Some(ref m) = override_model {
+             (crate::config::ModelSettings { name: m.clone(), ..Default::default() }, false) // Disable search by default for overrides
         } else if intent == "SEARCH" {
             (self.config.ai.models.classification.clone(), true)
         } else if intent == "PRO" {
@@ -368,7 +365,7 @@ impl SessionManager {
         }
         final_history.extend(history_vec);
 
-        match self.ai_client.generate_content(final_history, &model_id, use_search).await {
+        match self.ai_client.generate_content(final_history, &model_config, use_search).await {
             Ok(text) => {
                 info!("AI Response generated (len: {})", text.len());
                 BotResponse::Text(text)
@@ -548,10 +545,13 @@ impl SessionManager {
 
         let history_snapshot = self.state.get_history_snapshot(context_key).await;
 
+        let max_tokens = self.config.ai.models.classification.max_input_tokens.unwrap_or(1_000_000);
+        let token_limit = (max_tokens as f32 * 0.95) as i32;
+
         match self.ai_client.count_tokens(history_snapshot, &self.config.ai.models.classification).await {
            Ok(count) => {
-               if count > TOKEN_LIMIT {
-                   info!("Context window for {} is full ({} tokens > {}). Pruning...", crate::utils::anonymize(context_key), count, TOKEN_LIMIT);
+               if count > token_limit {
+                   info!("Context window for {} is full ({} tokens > {}). Pruning...", crate::utils::anonymize(context_key), count, token_limit);
                    if self.state.get_history_len(context_key).await > 4 {
                        self.state.prune_history(context_key, 4).await;
                    } else {
@@ -571,13 +571,6 @@ fn sanitize_display_name(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_bot_constants() {
-        assert!(TOKEN_LIMIT < MODEL_MAX_TOKENS);
-        assert_eq!(MODEL_MAX_TOKENS, 1_000_000);
-        assert_eq!(TOKEN_LIMIT, 950_000);
-    }
 
     #[test]
     fn test_bot_response_formatting() {

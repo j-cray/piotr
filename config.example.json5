@@ -32,16 +32,23 @@
   //
   //   models: {
   //     // Used for conversational responses (PRO intent)
-  //     chat: "gemini-3-pro-preview",
+  //     chat: {
+  //       name: "gemini-3-pro-preview",
+  //       temperature: 0.5,
+  //       maxOutputTokens: 8192,
+  //       maxInputTokens: 1000000,
+  //     },
   //     // Used for quick/general responses and intent classification
-  //     classification: "gemini-3-flash-preview",
+  //     classification: {
+  //       name: "gemini-3-flash-preview",
+  //       temperature: 0.2, // Low temperature for consistent classification
+  //       maxOutputTokens: 256,
+  //       maxInputTokens: 1000000,
+  //     },
   //     // Used for image generation
-  //     imagen: "imagen-3.0-generate-001",
-  //   },
-  //
-  //   generation: {
-  //     temperature: 0.5,
-  //     maxOutputTokens: 8192,
+  //     imagen: {
+  //       name: "imagen-3.0-generate-001",
+  //     },
   //   },
   // },
 
