@@ -411,6 +411,34 @@ mod tests {
         assert_eq!(special_hash.len(), 64);
     }
 
+    /// Ensure that migrations and profile persistence work end-to-end on SQLite.
+    #[tokio::test]
+    async fn test_db_profile_round_trip() {
+        // Set up an in-memory SQLite database and run migrations.
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
+
+        // Create a DbProfileManager using the migrated pool.
+        let manager = DbProfileManager {
+            pool,
+            encryption_key: [1u8; 32],
+        };
+
+        // Use a stable raw identifier and derive the stored profile ID.
+        let raw_id = "+15555550000";
+        let profile_id = DbProfileManager::get_profile_id(raw_id);
+
+        // Simple JSON payload for round-trip testing.
+        let profile_data = r#"{"name":"Alice","tier":"test"}"#;
+
+        // Save the profile and then read it back.
+        manager.save_profile(&profile_id, profile_data).await.unwrap();
+        let loaded = manager.get_profile(&profile_id).await.unwrap()
+            .expect("profile should exist after save");
+
+        assert_eq!(loaded, profile_data, "loaded profile does not match saved data");
+    }
+
     #[tokio::test]
     async fn test_memory_invalid_file_graceful_handling() {
         let mem = Memory::new("/tmp/this_file_definitely_does_not_exist_123.json");
