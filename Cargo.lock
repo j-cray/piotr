@@ -2116,6 +2116,7 @@ dependencies = [
  "dotenv",
  "google-cloud-auth",
  "hex",
+ "hmac",
  "image",
  "qr_code",
  "rand 0.10.0",
