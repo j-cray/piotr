@@ -15,15 +15,14 @@ const API_ENDPOINT: &str = "https://aiplatform.googleapis.com/v1";
 
 const CLASSIFICATION_INSTRUCTION: &str = r#"You are a classification router. Analyze the user's request and categorize it into one of these exact keywords:
 - IGNORE: If the user is mentioning you but clearly talking to someone else in the group chat and not expecting you to reply, or if the SYSTEM prompt instructs you to output IGNORE.
-- IMAGE_4: If request asks for 'high quality', 'ultra realistic', '4k', or 'detailed' image/drawing/photo.
-- IMAGE_3: If request asks to 'draw', 'generate', 'create', 'sketch', or 'paint' an image/picture/photo/art/robot, OR specifically says 'generate an image'.
+- IMAGE: If request asks to 'draw', 'generate', 'create', 'sketch', or 'paint' an image/picture/photo/art/robot, OR specifically says 'generate an image', 'high quality', 'ultra realistic', '4k', or 'detailed'.
 - PRO: If request involves complex reasoning, coding, math, or analysis.
 - SEARCH: If request asks to 'search', 'google', 'find info', 'who is', 'what is', 'latest news', 'lookup', or contains 'search the web'.
 - FLASH: For casual chat, greetings, or simple questions.
 
-Input: 'draw a cat' -> Output: IMAGE_3
-Input: 'generate an image of a dog' -> Output: IMAGE_3
-Input: 'sketch a robot' -> Output: IMAGE_3
+Input: 'draw a cat' -> Output: IMAGE
+Input: 'generate an image of a dog' -> Output: IMAGE
+Input: 'sketch a robot' -> Output: IMAGE
 Input: 'search for rust release' -> Output: SEARCH
 Input: 'google who won the super bowl' -> Output: SEARCH
 Input: 'find info on mars' -> Output: SEARCH
@@ -865,6 +864,52 @@ mod tests {
         let content = first_candidate.content.as_ref().unwrap();
         assert_eq!(content.role, "model");
         assert_eq!(content.parts[0].text.as_deref(), Some("Hello there!"));
+    }
+
+    #[test]
+    fn test_generate_image_response_parsing() {
+        // Test base64 image decoding logic using a dummy pixel
+        // A valid 1x1 transparent PNG structure conceptually
+        let b64_pixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+        let raw_json = format!(r#"{{
+            "predictions": [
+                {{
+                    "bytesBase64Encoded": "{}"
+                }}
+            ]
+        }}"#, b64_pixel);
+
+        let json: serde_json::Value = serde_json::from_str(&raw_json).unwrap();
+        let predictions = json.get("predictions").and_then(|p| p.as_array()).unwrap();
+        let first = predictions.first().unwrap();
+        let bytes_b64 = first.get("bytesBase64Encoded").and_then(|b| b.as_str()).unwrap();
+
+        use base64::{Engine as _, engine::general_purpose};
+        let bytes = general_purpose::STANDARD.decode(bytes_b64).unwrap();
+        
+        assert!(bytes.len() > 0);
+        assert_eq!(&bytes[0..4], &[0x89, 0x50, 0x4e, 0x47]); // PNG header
+    }
+
+    #[tokio::test]
+    async fn test_generate_image_live() {
+        let config = match crate::config::AppConfig::load() {
+            Ok(c) => Arc::new(c),
+            Err(_) => return,
+        };
+        if config.ai.gcp_project_id.is_empty() || config.ai.gcp_project_id == "your-gcp-project-id" {
+            println!("Skipping live test: real GCP Project ID not configured");
+            return;
+        }
+        let client = VertexClient::new(config.clone());
+
+        match client.generate_image("A tiny red dot", &config.ai.models.imagen).await {
+            Ok(bytes) => {
+                println!("Image generated successfully, size: {} bytes", bytes.len());
+                assert!(bytes.len() > 0);
+            },
+            Err(e) => panic!("Image generation failed: {:?}", e),
+        }
     }
 
     // --- SECURITY & STRICT TESTS ---

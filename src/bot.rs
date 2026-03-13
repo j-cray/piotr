@@ -247,7 +247,7 @@ impl SessionManager {
         }
     }
 
-    async fn generate_image_response(&self, _intent: &str, prompt: &str) -> BotResponse {
+    async fn generate_image_response(&self, prompt: &str) -> BotResponse {
         let model = &self.config.ai.models.imagen;
         info!("Attempting to generate image with model: {} for prompt", model.name);
 
@@ -440,7 +440,7 @@ impl SessionManager {
                         info!("Classified intent: {}", intent);
 
                         if intent.starts_with("IMAGE") {
-                            self_clone_seq.generate_image_response(&intent, &request.prompt).await
+                            self_clone_seq.generate_image_response(&request.prompt).await
                         } else if intent == "IGNORE" {
                             should_abort_generation = true;
                             // Returning an empty text avoids the signal send logic below
