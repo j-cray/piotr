@@ -722,7 +722,7 @@ mod tests {
         // 1000 limit, 1001 tokens, 100 msgs. Avg = 10.01 per msg. Excess = 1. 1/10.01 = 0.099 -> ceil() -> 1.
         assert_eq!(SessionManager::calculate_prune_amount(100, 1001, 1000), 1);
 
-        // Case: Pruning more than available
-        assert_eq!(SessionManager::calculate_prune_amount(5, 5000, 1000), 5);
+        // Case: Pruning exactly what's needed for the limit
+        assert_eq!(SessionManager::calculate_prune_amount(5, 5000, 1000), 4);
     }
 }
