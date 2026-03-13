@@ -7,6 +7,8 @@ use reqwest::{Client, StatusCode};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::time::{Duration, Instant};
+use google_cloud_auth::credentials::{Builder as AuthBuilder, AccessTokenCredentials};
+use tokio::sync::OnceCell;
 
 // Correct global endpoint base URL
 const API_ENDPOINT: &str = "https://aiplatform.googleapis.com/v1";
@@ -76,6 +78,7 @@ pub struct VertexClient {
     project_id: String,
     http_client: Client,
     last_request_time: Arc<Mutex<Instant>>,
+    token_provider: Arc<OnceCell<AccessTokenCredentials>>,
 }
 
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
@@ -141,22 +144,19 @@ impl VertexClient {
             http_client: Client::new(),
             // Initialize to past so first request is immediate
             last_request_time: Arc::new(Mutex::new(Instant::now().checked_sub(Duration::from_secs(2)).unwrap())),
+            token_provider: Arc::new(OnceCell::new()),
         }
     }
 
     async fn get_token(&self) -> Result<String> {
-        // Use gcloud auth print-access-token
-        let output = tokio::process::Command::new("gcloud")
-            .args(&["auth", "print-access-token"])
-            .output()
-            .await?;
+        let provider = self.token_provider.get_or_try_init(|| async {
+            AuthBuilder::default()
+                .with_quota_project_id(&self.project_id)
+                .build_access_token_credentials()
+        }).await.map_err(|e| anyhow::anyhow!("Failed to build credentials provider: {}", e))?;
 
-        if !output.status.success() {
-            anyhow::bail!("Failed to get gcloud token: {:?}", String::from_utf8(output.stderr));
-        }
-
-        let token = String::from_utf8(output.stdout)?.trim().to_string();
-        Ok(token)
+        let access_token = provider.access_token().await.map_err(|e| anyhow::anyhow!("Failed to get access token: {}", e))?;
+        Ok(access_token.token)
     }
 
     async fn wait_for_rate_limit(&self) {
