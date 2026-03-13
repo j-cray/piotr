@@ -2,23 +2,30 @@
   // Piotr Application Configuration Example
   // Copy this file to ~/.config/piotr/config.json5 and uncomment/modify values as needed.
 
+  // Optional: Define environment variables inline or load them from your system.
+  // env: {
+  //   vars: {
+  //     // IMPORTANT: It's recommended to set PIOTR_PROFILE_ENCRYPTION_KEY and PIOTR_ANONYMIZE_KEY 
+  //     // in your actual system environment instead of here to prevent checking secrets into Git.
+  //     //
+  //     // Example setting a GCP project ID to be substituted later:
+  //     PIOTR_GCP_PROJECT_ID: "your-gcp-project-id"
+  //   }
+  // },
+
   // database: {
-  //   // Note: Can be overridden by PIOTR__DATABASE__URL
   //   url: "sqlite://data/piotr.db",
   // },
 
   // security: {
-  //   // IMPORTANT: Generate a secure 32-byte key for both of these, e.g. using `openssl rand -hex 32`
-  //   // Can be overridden by PIOTR__SECURITY__PROFILE_ENCRYPTION_KEY
-  //   profile_encryption_key: "CHANGEME_32_BYTE_HEX_STRING_HERE",
-  //
-  //   // Can be overridden by PIOTR__SECURITY__ANONYMIZE_KEY
-  //   anonymize_key: "CHANGEME_32_BYTE_HEX_STRING_HERE",
+  //   // Substitute from environment: Generate 32-byte hex strings via `openssl rand -hex 32`
+  //   profile_encryption_key: "${PIOTR_PROFILE_ENCRYPTION_KEY}",
+  //   anonymize_key: "${PIOTR_ANONYMIZE_KEY}",
   // },
 
   // ai: {
-  //   // Your Google Cloud Project ID that has Vertex AI enabled
-  //   gcp_project_id: "your-gcp-project-id",
+  //   // Example substituting the value injected in the env block above
+  //   gcp_project_id: "${PIOTR_GCP_PROJECT_ID}",
   //
   //   // The primary region for Vertex AI endpoints
   //   gcp_location: "us-central1",
