@@ -2,13 +2,4 @@
 /.direnv
 **/*.rs.bk
 .env
-
-
-# Added by cargo
-#
-# already existing elements were commented out
-
-#/target
-
-# User Data
 data/
