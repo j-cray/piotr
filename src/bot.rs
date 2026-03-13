@@ -111,9 +111,8 @@ impl SessionManager {
                     if is_quote_reply || is_mentioned {
                         (true, text.clone())
                     } else {
-                        // Random joke logic is now simple eavesdropping participation
                         let mut rng = rand::rng();
-                        if rng.random_bool(0.15) { // 5% chance to just chime in
+                        if rng.random_bool(0.10) { // 10% chance to just chime in
                             (true, text.clone())
                         } else {
                             (false, String::new())
