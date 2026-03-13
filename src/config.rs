@@ -443,6 +443,8 @@ mod tests {
         assert_eq!(app_config.signal.data_path, "/tmp/signal");
         assert_eq!(app_config.signal.phone_number.as_deref(), Some("+1234567890"));
         assert_eq!(app_config.performance.api_cooldown_ms, 500);
+        assert_eq!(app_config.performance.max_concurrent_requests, 5);
+        assert_eq!(app_config.performance.message_processing_timeout_secs, 10);
         assert_eq!(app_config.bot.name, "TestBot");
     }
 
