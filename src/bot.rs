@@ -462,8 +462,11 @@ impl SessionManager {
                                 if is_long_form {
                                     let trimmed = text.trim();
                                     if !trimmed.is_empty() {
+                                        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
                                         if let Err(e) = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), trimmed, None).await {
                                             error!("Failed to send Signal response (long form): {:?}", e);
+                                        } else {
+                                            state_seq.insert_sent_message(ts, request.prompt.clone(), trimmed.to_string()).await;
                                         }
                                     }
                                 } else {
@@ -476,8 +479,11 @@ impl SessionManager {
                                                 let mut current_chunk = String::new();
                                                 for word in trimmed.split_whitespace() {
                                                     if current_chunk.len() + word.len() + 1 > target_len && !current_chunk.is_empty() {
+                                                        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
                                                         if let Err(e) = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), &current_chunk, None).await {
                                                             error!("Failed to send Signal response chunk: {:?}", e);
+                                                        } else {
+                                                            state_seq.insert_sent_message(ts, request.prompt.clone(), current_chunk.clone()).await;
                                                         }
                                                         current_chunk.clear();
                                                     }
@@ -487,13 +493,19 @@ impl SessionManager {
                                                     current_chunk.push_str(word);
                                                 }
                                                 if !current_chunk.is_empty() {
+                                                    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
                                                     if let Err(e) = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), &current_chunk, None).await {
                                                         error!("Failed to send Signal response final chunk: {:?}", e);
+                                                    } else {
+                                                        state_seq.insert_sent_message(ts, request.prompt.clone(), current_chunk.clone()).await;
                                                     }
                                                 }
                                             } else {
+                                                let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
                                                 if let Err(e) = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), trimmed, None).await {
                                                     error!("Failed to send Signal response: {:?}", e);
+                                                } else {
+                                                    state_seq.insert_sent_message(ts, request.prompt.clone(), trimmed.to_string()).await;
                                                 }
                                             }
                                         }
