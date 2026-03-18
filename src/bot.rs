@@ -458,9 +458,14 @@ impl SessionManager {
                                     state_seq.insert_sent_message(now_ts, user_text, text.clone()).await;
                                 }
 
-                                // Send Message
-                                if let Err(e) = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), &text, None).await {
-                                    error!("Failed to send Signal response: {:?}", e);
+                                // Send Messages per paragraph
+                                for paragraph in text.split("\n\n") {
+                                    let trimmed = paragraph.trim();
+                                    if !trimmed.is_empty() {
+                                        if let Err(e) = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), trimmed, None).await {
+                                            error!("Failed to send Signal response: {:?}", e);
+                                        }
+                                    }
                                 }
                             },
                             BotResponse::Image(filename, text) => {
