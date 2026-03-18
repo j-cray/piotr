@@ -458,12 +458,34 @@ impl SessionManager {
                                     state_seq.insert_sent_message(now_ts, user_text, text.clone()).await;
                                 }
 
-                                // Send Messages per paragraph
+                                // Send Messages per paragraph, chunking if they exceed the target length
+                                let target_len = self_clone_seq.config.bot.target_message_length_chars;
                                 for paragraph in text.split("\n\n") {
                                     let trimmed = paragraph.trim();
                                     if !trimmed.is_empty() {
-                                        if let Err(e) = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), trimmed, None).await {
-                                            error!("Failed to send Signal response: {:?}", e);
+                                        if trimmed.len() > target_len {
+                                            let mut current_chunk = String::new();
+                                            for word in trimmed.split_whitespace() {
+                                                if current_chunk.len() + word.len() + 1 > target_len && !current_chunk.is_empty() {
+                                                    if let Err(e) = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), &current_chunk, None).await {
+                                                        error!("Failed to send Signal response chunk: {:?}", e);
+                                                    }
+                                                    current_chunk.clear();
+                                                }
+                                                if !current_chunk.is_empty() {
+                                                    current_chunk.push(' ');
+                                                }
+                                                current_chunk.push_str(word);
+                                            }
+                                            if !current_chunk.is_empty() {
+                                                if let Err(e) = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), &current_chunk, None).await {
+                                                    error!("Failed to send Signal response final chunk: {:?}", e);
+                                                }
+                                            }
+                                        } else {
+                                            if let Err(e) = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), trimmed, None).await {
+                                                error!("Failed to send Signal response: {:?}", e);
+                                            }
                                         }
                                     }
                                 }
