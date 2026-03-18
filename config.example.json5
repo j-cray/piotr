@@ -73,6 +73,5 @@
   //   targetMessageLengthChars: 1000,
   //   enableMessageSplitting: true,
   //   enableParagraphSplitting: true,
-  //   longFormTriggers: ["essay", "song", "poem", "code", "script"],
   // },
 }

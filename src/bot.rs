@@ -452,12 +452,7 @@ impl SessionManager {
 
 
 
-                                // Exception for long-form content like essays and songs
-                                let is_long_form = self_clone_seq.config.bot.long_form_triggers
-                                    .iter()
-                                    .any(|trigger| prompt_lower.contains(trigger));
-
-                                if is_long_form || !self_clone_seq.config.bot.enable_message_splitting {
+                                if !self_clone_seq.config.bot.enable_message_splitting {
                                     let trimmed = text.trim();
                                     if !trimmed.is_empty() {
                                         let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;

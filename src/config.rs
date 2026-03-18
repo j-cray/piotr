@@ -398,7 +398,6 @@ pub struct BotConfig {
     pub target_message_length_chars: usize,
     pub enable_message_splitting: bool,
     pub enable_paragraph_splitting: bool,
-    pub long_form_triggers: Vec<String>,
 }
 
 impl Default for BotConfig {
@@ -410,13 +409,6 @@ impl Default for BotConfig {
             target_message_length_chars: 1000,
             enable_message_splitting: true,
             enable_paragraph_splitting: true,
-            long_form_triggers: vec![
-                "essay".to_string(),
-                "song".to_string(),
-                "poem".to_string(),
-                "code".to_string(),
-                "script".to_string(),
-            ],
         }
     }
 }
