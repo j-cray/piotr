@@ -450,19 +450,30 @@ impl SessionManager {
                                 };
                                 state_seq.add_model_message(&context_key_seq, model_content).await;
 
-                                if let Some(user_text) = state_seq.get_last_user_prompt(&context_key_seq).await {
-                                    let now_ts = SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_millis() as u64;
-                                    state_seq.insert_sent_message(now_ts, user_text, text.clone()).await;
-                                }
+                                // Retrieve the last user prompt once; we'll record a sent-message entry
+                                // for each paragraph we actually send in response to it.
+                                let last_user_prompt = state_seq.get_last_user_prompt(&context_key_seq).await;
 
                                 // Exception for long-form content like essays and songs
                                 let is_long_form = prompt_lower.contains("essay") 
                                     || prompt_lower.contains("song")
                                     || prompt_lower.contains("poem")
-                                    || prompt_lower.contains("story")
+                                        // Record a sent-message entry with a fresh timestamp for this paragraph,
+                                        // so reactions keyed by targetSentTimestamp can be correctly looked up.
+                                        if let Some(ref user_text) = last_user_prompt {
+                                            let now_ts = SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap_or_default()
+                                                .as_millis() as u64;
+                                            state_seq
+                                                .insert_sent_message(now_ts, user_text.clone(), trimmed.to_string())
+                                                .await;
+                                        }
+
+                                        if let Err(e) = signal_client_seq
+                                            .send_message(&reply_source, reply_group_id.as_deref(), trimmed, None)
+                                            .await
+                                        {
                                     || prompt_lower.contains("code")
                                     || prompt_lower.contains("script");
 
