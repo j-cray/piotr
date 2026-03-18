@@ -453,13 +453,11 @@ impl SessionManager {
 
 
                                 // Exception for long-form content like essays and songs
-                                let is_long_form = prompt_lower.contains("essay") 
-                                    || prompt_lower.contains("song")
-                                    || prompt_lower.contains("poem")
-                                    || prompt_lower.contains("code")
-                                    || prompt_lower.contains("script");
+                                let is_long_form = self_clone_seq.config.bot.long_form_triggers
+                                    .iter()
+                                    .any(|trigger| prompt_lower.contains(trigger));
 
-                                if is_long_form {
+                                if is_long_form || !self_clone_seq.config.bot.enable_message_splitting {
                                     let trimmed = text.trim();
                                     if !trimmed.is_empty() {
                                         let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
@@ -472,7 +470,13 @@ impl SessionManager {
                                 } else {
                                     // Send Messages per paragraph, chunking if they exceed the target length
                                     let target_len = self_clone_seq.config.bot.target_message_length_chars;
-                                    for paragraph in text.split("\n\n") {
+                                    let paragraphs: Vec<&str> = if self_clone_seq.config.bot.enable_paragraph_splitting {
+                                        text.split("\n\n").collect()
+                                    } else {
+                                        vec![text.as_str()]
+                                    };
+                                    
+                                    for paragraph in paragraphs {
                                         let trimmed = paragraph.trim();
                                         if !trimmed.is_empty() {
                                             if trimmed.len() > target_len {

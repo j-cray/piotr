@@ -71,5 +71,8 @@
   //   location: "Unknown",
   //   systemPrompt: "Helpful and witty AI assistant",
   //   targetMessageLengthChars: 1000,
+  //   enableMessageSplitting: true,
+  //   enableParagraphSplitting: true,
+  //   longFormTriggers: ["essay", "song", "poem", "code", "script"],
   // },
 }
