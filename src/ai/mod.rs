@@ -474,7 +474,12 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
                         }
                     }
                 }
-                anyhow::bail!("No content in analysis response");
+                tracing::warn!("No content in analysis response: {}", serde_json::to_string(&json).unwrap_or_default());
+                return Ok(ReactionAnalysis {
+                    sentiment_score: 0.0,
+                    reasoning: "Safety or empty response".to_string(),
+                    tags: vec![],
+                });
             } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
                  retries += 1;
                  if retries > 3 {
@@ -580,7 +585,8 @@ Structure:
                         }
                     }
                 }
-                anyhow::bail!("No content in profile analysis response");
+                tracing::warn!("No content in profile analysis response: {}", serde_json::to_string(&json).unwrap_or_default());
+                return Ok(current_profile.clone());
             } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
                  retries += 1;
                  if retries > 3 {
@@ -686,7 +692,8 @@ Structure:
                         }
                     }
                 }
-                anyhow::bail!("No content in group profile analysis response");
+                tracing::warn!("No content in group profile analysis response: {}", serde_json::to_string(&json).unwrap_or_default());
+                return Ok(current_profile.clone());
             } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
                  retries += 1;
                  if retries > 3 {
