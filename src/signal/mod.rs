@@ -118,27 +118,7 @@ pub struct SignalClient {
     user_phone: String,
     tx: mpsc::Sender<Value>,
     next_request_id: Arc<AtomicUsize>,
-    #[allow(dead_code)]
-    process_guard: Arc<SignalProcessGuard>,
     pending_requests: Arc<std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<Result<()>>>>>,
-}
-
-struct SignalProcessGuard {
-    child: std::sync::Mutex<Option<tokio::process::Child>>,
-}
-
-impl Drop for SignalProcessGuard {
-    fn drop(&mut self) {
-        if let Ok(mut lock) = self.child.lock() {
-            if let Some(child) = lock.as_mut() {
-                if let Err(e) = child.start_kill() {
-                    tracing::warn!("Failed to kill signal-cli child process: {}", e);
-                } else {
-                    tracing::info!("Sent kill signal to signal-cli process");
-                }
-            }
-        }
-    }
 }
 
 impl SignalClient {
@@ -156,9 +136,6 @@ impl SignalClient {
             user_phone: "dummy".to_string(),
             tx,
             next_request_id: Arc::new(AtomicUsize::new(1)),
-            process_guard: Arc::new(SignalProcessGuard {
-                child: std::sync::Mutex::new(None),
-            }),
             pending_requests: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
@@ -174,99 +151,133 @@ impl SignalClient {
             anyhow::bail!("Invalid phone number format '{}': expected E.164 (e.g. +12345678901)", user_phone);
         }
 
-        info!("Starting signal-cli for user: [REDACTED]");
-        let mut child = Command::new("signal-cli")
-            .arg("--config")
-            .arg(data_path)
-            .arg("-u")
-            .arg(user_phone)
-            .arg("--output=json")
-            .arg("jsonRpc")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit()) // Log stderr to parent stderr
-            .spawn()
-            .context("Failed to spawn signal-cli")?;
-
-        let mut stdin = child.stdin.take().context("No stdin handle")?;
-        let stdout = child.stdout.take().context("No stdout handle")?;
+        info!("Starting robust signal-cli supervisor for user: [REDACTED]");
 
         let (tx_in, mut rx_in) = mpsc::channel::<Value>(100);
         let (tx_out, rx_out) = mpsc::channel::<SignalMessage>(100);
 
-        // Stdin writer task
-        tokio::spawn(async move {
-            while let Some(payload) = rx_in.recv().await {
-                if let Ok(payload_str) = serde_json::to_string(&payload) {
-                    info!("Sending Signal RPC");
-                    tracing::debug!("Sending Signal RPC payload: [REDACTED]");
-                    if stdin.write_all(payload_str.as_bytes()).await.is_err() {
-                        break;
-                    }
-                    if stdin.write_all(b"\n").await.is_err() {
-                        break;
-                    }
-                    if stdin.flush().await.is_err() {
-                        break;
-                    }
-                }
-            }
-        });
-
-        let process_guard = Arc::new(SignalProcessGuard {
-            child: std::sync::Mutex::new(Some(child)),
-        });
-        let process_guard_clone = process_guard.clone();
-
         let pending_requests = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<String, tokio::sync::oneshot::Sender<Result<()>>>::new()));
         let pending_requests_clone = pending_requests.clone();
 
-        // Stdout reader task
+        let phone_clone = user_phone.to_string();
+        let data_path_clone = data_path.to_string();
+
         tokio::spawn(async move {
-            let reader = BufReader::new(stdout);
-            let mut lines = reader.lines();
+            let mut current_child: Option<tokio::process::Child> = None;
+            let mut current_stdin: Option<tokio::process::ChildStdin> = None;
+            let mut reader: Option<tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>> = None;
 
-            while let Ok(Some(line)) = lines.next_line().await {
-                if line.trim().is_empty() { continue; }
-
-                tracing::debug!("Raw Signal Line received");
-
-                if let Ok(rpc) = serde_json::from_str::<JsonRpcNotification>(&line) {
-                     if rpc.method == "receive" {
-                        if let Err(e) = tx_out.send(rpc.params).await {
-                            error!("Receiver dropped: {}", e);
-                            break;
-                        }
-                     }
-                } else if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(&line) {
-                    if let Some(id_str) = resp.id {
-                        let sender_opt = pending_requests_clone.lock().unwrap().remove(&id_str);
-                        if let Some(sender) = sender_opt {
-                            if let Some(error) = resp.error {
-                                let _ = sender.send(Err(anyhow::anyhow!("Signal Command Failed (ID: {}): {} - {:?}", id_str, error.message, error.data)));
-                            } else {
-                                let _ = sender.send(Ok(()));
+            loop {
+                if current_child.is_none() {
+                    info!("Spawning signal-cli process");
+                    let mut child = match Command::new("signal-cli")
+                        .arg("--config").arg(&data_path_clone)
+                        .arg("-u").arg(&phone_clone)
+                        .arg("--output=json")
+                        .arg("jsonRpc")
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::inherit())
+                        .spawn() {
+                            Ok(c) => c,
+                            Err(e) => {
+                                error!("Failed to spawn signal-cli: {}. Retrying in 5s...", e);
+                                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                                continue;
                             }
-                        } else {
-                            if let Some(error) = resp.error {
-                                warn!("Signal Command Failed (ID: {}): {} - Data: {:?}", id_str, error.message, error.data);
-                            } else {
-                                info!("Signal Command Success (ID: {}): {:?}", id_str, resp.result);
-                            }
-                        }
-                    } else if let Some(error) = resp.error {
-                        warn!("Signal Command Failed (No ID): {} - Data: {:?}", error.message, error.data);
-                    }
-                } else {
-                    warn!("Unknown Signal output: {}", line);
+                        };
+                    
+                    current_stdin = Some(child.stdin.take().unwrap());
+                    reader = Some(BufReader::new(child.stdout.take().unwrap()).lines());
+                    current_child = Some(child);
+                    info!("signal-cli process spawned successfully");
                 }
-            }
-            info!("Signal listener loop ended");
-            let child_opt = process_guard_clone.child.lock().unwrap().take();
-            if let Some(mut child) = child_opt {
-                match child.wait().await {
-                    Ok(status) => tracing::error!("signal-cli exited with status: {}", status),
-                    Err(e) => tracing::error!("Failed to wait for signal-cli: {}", e),
+
+                tokio::select! {
+                    payload_opt = rx_in.recv() => {
+                        match payload_opt {
+                            Some(payload) => {
+                                if let Some(stdin) = current_stdin.as_mut() {
+                                    if let Ok(payload_str) = serde_json::to_string(&payload) {
+                                        tracing::debug!("Sending Signal RPC payload: [REDACTED]");
+                                        if stdin.write_all(payload_str.as_bytes()).await.is_err() ||
+                                           stdin.write_all(b"\n").await.is_err() ||
+                                           stdin.flush().await.is_err() {
+                                            error!("Failed to write to signal-cli stdin. Triggering restart.");
+                                            let mut child = current_child.take().unwrap();
+                                            let _ = child.kill().await;
+                                            current_stdin = None;
+                                            reader = None;
+                                        }
+                                    }
+                                }
+                            },
+                            None => {
+                                info!("Signal supervisor rx_in dropped. Exiting gracefully.");
+                                if let Some(mut child) = current_child.take() {
+                                    let _ = child.kill().await;
+                                }
+                                break;
+                            }
+                        }
+                    },
+                    line_res = async {
+                        if let Some(r) = reader.as_mut() {
+                            r.next_line().await
+                        } else {
+                            std::future::pending().await
+                        }
+                    } => {
+                        match line_res {
+                            Ok(Some(line)) => {
+                                if line.trim().is_empty() { continue; }
+                                tracing::debug!("Raw Signal Line received");
+
+                                if let Ok(rpc) = serde_json::from_str::<JsonRpcNotification>(&line) {
+                                     if rpc.method == "receive" {
+                                        if let Err(e) = tx_out.send(rpc.params).await {
+                                            error!("Receiver dropped: {}", e);
+                                            break;
+                                        }
+                                     }
+                                } else if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(&line) {
+                                    if let Some(id_str) = resp.id {
+                                        let sender_opt = pending_requests_clone.lock().unwrap().remove(&id_str);
+                                        if let Some(sender) = sender_opt {
+                                            if let Some(error) = resp.error {
+                                                let _ = sender.send(Err(anyhow::anyhow!("Signal Command Failed (ID: {}): {} - {:?}", id_str, error.message, error.data)));
+                                            } else {
+                                                let _ = sender.send(Ok(()));
+                                            }
+                                        } else {
+                                            if let Some(error) = resp.error {
+                                                warn!("Signal Command Failed (ID: {}): {} - Data: {:?}", id_str, error.message, error.data);
+                                            } else {
+                                                info!("Signal Command Success (ID: {}): {:?}", id_str, resp.result);
+                                            }
+                                        }
+                                    } else if let Some(error) = resp.error {
+                                        warn!("Signal Command Failed (No ID): {} - Data: {:?}", error.message, error.data);
+                                    }
+                                } else {
+                                    warn!("Unknown Signal output: {}", line);
+                                }
+                            },
+                            Ok(None) | Err(_) => {
+                                error!("Signal-cli stdout closed unexpectedly. Restarting process...");
+                                if let Some(mut child) = current_child.take() {
+                                    let _ = child.kill().await;
+                                }
+                                current_stdin = None;
+                                reader = None;
+                                
+                                let mut map = pending_requests_clone.lock().unwrap();
+                                for (_, tx) in map.drain() {
+                                    let _ = tx.send(Err(anyhow::anyhow!("Signal-cli process restarted before command could complete")));
+                                }
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -275,7 +286,6 @@ impl SignalClient {
             user_phone: user_phone.to_string(),
             tx: tx_in,
             next_request_id: Arc::new(AtomicUsize::new(1)),
-            process_guard,
             pending_requests,
         }, rx_out))
     }
