@@ -206,7 +206,11 @@ impl SessionManager {
         let mut final_history = Vec::new();
 
         let target_len = self.config.bot.target_message_length_chars;
-        let format_instructions = format!("FORMATTING INSTRUCTION: Aim to respond with exactly one paragraph of around {} characters. You may use subsequent formatting paragraphs if absolutely necessary, but do so with increasing reluctance, as each paragraph is sent as an independent push notification message to the user.", target_len);
+        let format_instructions = if intent == "PRO" {
+            "FORMATTING INSTRUCTION: You are providing a detailed or complex response. You may write as much as necessary, using multiple paragraphs. Please format your response clearly.".to_string()
+        } else {
+            format!("FORMATTING INSTRUCTION: For casual conversation, aim to respond with exactly one paragraph of around {} characters. You may use subsequent paragraphs if necessary, but do so with reluctance, as each paragraph is a separate push notification. IMPORTANT: If the user explicitly asks for a long-form response (like an essay or detailed explanation), you may completely ignore this length limit and write as much as needed.", target_len)
+        };
         
         final_history.push(Content {
             role: "user".to_string(),
@@ -214,7 +218,7 @@ impl SessionManager {
         });
         final_history.push(Content {
             role: "model".to_string(),
-            parts: vec![Part { text: Some("Understood. I will strictly manage my paragraph count and length.".to_string()) }]
+            parts: vec![Part { text: Some("Understood. I will manage my length according to the context and user request.".to_string()) }]
         });
 
         // 1. Inject User Profile
