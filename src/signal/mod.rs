@@ -264,7 +264,10 @@ impl SignalClient {
             info!("Signal listener loop ended");
             let child_opt = process_guard_clone.child.lock().unwrap().take();
             if let Some(mut child) = child_opt {
-                let _ = child.wait().await; // Wait for child process to exit completely
+                match child.wait().await {
+                    Ok(status) => tracing::error!("signal-cli exited with status: {}", status),
+                    Err(e) => tracing::error!("Failed to wait for signal-cli: {}", e),
+                }
             }
         });
 

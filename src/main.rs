@@ -79,7 +79,7 @@ async fn main() -> anyhow::Result<()> {
         }
     ).await;
 
-    Ok(())
+    Err(anyhow::anyhow!("Signal message stream ended unexpectedly. The underlying signal-cli process may have crashed due to websocket disconnection."))
 }
 
 pub async fn process_message_stream<F, Fut>(
