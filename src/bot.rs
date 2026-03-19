@@ -82,7 +82,24 @@ impl SessionManager {
 
                 // Explicit triggers
                 let bot_name_lower = self.config.bot.name.to_lowercase();
-let mut is_explicit_interaction = !is_group || is_quote_reply || text_lower.contains(&format!("@{}", bot_name_lower)) || text_lower.contains(&bot_name_lower);
+                let trimmed_lower = text_lower.trim_start();
+                // Treat as explicit only if:
+                // - it's not a group message (DM), or
+                // - it's a quote reply to the bot, or
+                // - the message explicitly *addresses* the bot at the start (e.g. "@piotr ..." or "piotr: ..."),
+                //   rather than merely mentioning the name somewhere in the middle of the text.
+                let addressed_by_at = trimmed_lower.starts_with(&format!("@{}", bot_name_lower));
+                let addressed_by_name_prefix = if trimmed_lower.starts_with(&bot_name_lower) {
+                    let remainder = &trimmed_lower[bot_name_lower.len()..];
+                    remainder
+                        .chars()
+                        .next()
+                        .map(|c| c.is_whitespace() || matches!(c, ':' | ',' | ';' | '-' ))
+                        .unwrap_or(true)
+                } else {
+                    false
+                };
+                let mut is_explicit_interaction = !is_group || is_quote_reply || addressed_by_at || addressed_by_name_prefix;
 
                 // Also check native Signal mentions
                 if let Some(mentions) = &data.mentions {
