@@ -82,7 +82,7 @@ impl SessionManager {
 
                 // Explicit triggers
                 let bot_name_lower = self.config.bot.name.to_lowercase();
-                let mut is_explicit_interaction = !is_group || is_quote_reply || text_lower.contains(&format!("@{}", bot_name_lower));
+let mut is_explicit_interaction = !is_group || is_quote_reply || text_lower.contains(&format!("@{}", bot_name_lower)) || text_lower.contains(&bot_name_lower);
 
                 // Also check native Signal mentions
                 if let Some(mentions) = &data.mentions {
