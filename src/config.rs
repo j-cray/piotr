@@ -398,6 +398,7 @@ pub struct BotConfig {
     pub target_message_length_chars: usize,
     pub enable_message_splitting: bool,
     pub enable_paragraph_splitting: bool,
+    pub message_delay_ms: u64,
 }
 
 impl Default for BotConfig {
@@ -409,6 +410,7 @@ impl Default for BotConfig {
             target_message_length_chars: 1000,
             enable_message_splitting: true,
             enable_paragraph_splitting: true,
+            message_delay_ms: 100,
         }
     }
 }

@@ -73,5 +73,6 @@
   //   targetMessageLengthChars: 1000,
   //   enableMessageSplitting: true,
   //   enableParagraphSplitting: true,
+  //   messageDelayMs: 100,
   // },
 }

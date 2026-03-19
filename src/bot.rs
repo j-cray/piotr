@@ -465,6 +465,9 @@ impl SessionManager {
                                 } else {
                                     // Send Messages per paragraph, chunking if they exceed the target length
                                     let target_len = self_clone_seq.config.bot.target_message_length_chars;
+                                    let delay = tokio::time::Duration::from_millis(self_clone_seq.config.bot.message_delay_ms);
+                                    let mut is_first = true;
+
                                     let paragraphs: Vec<&str> = if self_clone_seq.config.bot.enable_paragraph_splitting {
                                         text.split("\n\n").collect()
                                     } else {
@@ -478,6 +481,9 @@ impl SessionManager {
                                                 let mut current_chunk = String::new();
                                                 for word in trimmed.split_whitespace() {
                                                     if current_chunk.len() + word.len() + 1 > target_len && !current_chunk.is_empty() {
+                                                        if !is_first { tokio::time::sleep(delay).await; }
+                                                        is_first = false;
+
                                                         let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
                                                         if let Err(e) = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), &current_chunk, None).await {
                                                             error!("Failed to send Signal response chunk: {:?}", e);
@@ -492,6 +498,9 @@ impl SessionManager {
                                                     current_chunk.push_str(word);
                                                 }
                                                 if !current_chunk.is_empty() {
+                                                    if !is_first { tokio::time::sleep(delay).await; }
+                                                    is_first = false;
+
                                                     let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
                                                     if let Err(e) = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), &current_chunk, None).await {
                                                         error!("Failed to send Signal response final chunk: {:?}", e);
@@ -500,6 +509,9 @@ impl SessionManager {
                                                     }
                                                 }
                                             } else {
+                                                if !is_first { tokio::time::sleep(delay).await; }
+                                                is_first = false;
+
                                                 let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
                                                 if let Err(e) = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), trimmed, None).await {
                                                     error!("Failed to send Signal response: {:?}", e);
