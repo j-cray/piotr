@@ -120,6 +120,7 @@ pub struct SignalClient {
     next_request_id: Arc<AtomicUsize>,
     #[allow(dead_code)]
     process_guard: Arc<SignalProcessGuard>,
+    pending_requests: Arc<std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<Result<()>>>>>,
 }
 
 struct SignalProcessGuard {
@@ -158,6 +159,7 @@ impl SignalClient {
             process_guard: Arc::new(SignalProcessGuard {
                 child: std::sync::Mutex::new(None),
             }),
+            pending_requests: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -216,6 +218,9 @@ impl SignalClient {
         });
         let process_guard_clone = process_guard.clone();
 
+        let pending_requests = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<String, tokio::sync::oneshot::Sender<Result<()>>>::new()));
+        let pending_requests_clone = pending_requests.clone();
+
         // Stdout reader task
         tokio::spawn(async move {
             let reader = BufReader::new(stdout);
@@ -234,10 +239,23 @@ impl SignalClient {
                         }
                      }
                 } else if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(&line) {
-                    if let Some(error) = resp.error {
-                        warn!("Signal Command Failed (ID: {:?}): {} - Data: {:?}", resp.id, error.message, error.data);
-                    } else {
-                        info!("Signal Command Success (ID: {:?}): {:?}", resp.id, resp.result);
+                    if let Some(id_str) = resp.id {
+                        let sender_opt = pending_requests_clone.lock().unwrap().remove(&id_str);
+                        if let Some(sender) = sender_opt {
+                            if let Some(error) = resp.error {
+                                let _ = sender.send(Err(anyhow::anyhow!("Signal Command Failed (ID: {}): {} - {:?}", id_str, error.message, error.data)));
+                            } else {
+                                let _ = sender.send(Ok(()));
+                            }
+                        } else {
+                            if let Some(error) = resp.error {
+                                warn!("Signal Command Failed (ID: {}): {} - Data: {:?}", id_str, error.message, error.data);
+                            } else {
+                                info!("Signal Command Success (ID: {}): {:?}", id_str, resp.result);
+                            }
+                        }
+                    } else if let Some(error) = resp.error {
+                        warn!("Signal Command Failed (No ID): {} - Data: {:?}", error.message, error.data);
                     }
                 } else {
                     warn!("Unknown Signal output: {}", line);
@@ -255,6 +273,7 @@ impl SignalClient {
             tx: tx_in,
             next_request_id: Arc::new(AtomicUsize::new(1)),
             process_guard,
+            pending_requests,
         }, rx_out))
     }
 
@@ -277,14 +296,34 @@ impl SignalClient {
              }
         }
 
+        let id_str = self.next_id();
         let payload = json!({
             "jsonrpc": "2.0",
             "method": "send",
             "params": params,
-            "id": self.next_id()
+            "id": &id_str
         });
 
-        self.send_payload(&payload).await
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        {
+            let mut map = self.pending_requests.lock().unwrap();
+            map.insert(id_str.clone(), resp_tx);
+        }
+
+        self.send_payload(&payload).await?;
+
+        match tokio::time::timeout(tokio::time::Duration::from_secs(30), resp_rx).await {
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(e))) => Err(e),
+            Ok(Err(_)) => {
+                self.pending_requests.lock().unwrap().remove(&id_str);
+                Err(anyhow::anyhow!("Signal CLI response channel dropped unexpectedly"))
+            }
+            Err(_) => {
+                self.pending_requests.lock().unwrap().remove(&id_str);
+                Err(anyhow::anyhow!("Signal command timed out after 30s"))
+            }
+        }
     }
 
     pub async fn send_receipt(&self, recipient: &str, target_timestamp: u64) -> Result<()> {
