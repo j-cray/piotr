@@ -82,53 +82,52 @@ impl SessionManager {
 
                 // Explicit triggers
                 let bot_name_lower = self.config.bot.name.to_lowercase();
-                let mut is_mentioned = text_lower.contains(&format!("@{}", bot_name_lower)) || text_lower.contains(&bot_name_lower);
+                let trimmed_lower = text_lower.trim_start();
+                // Treat as explicit only if:
+                // - it's not a group message (DM), or
+                // - it's a quote reply to the bot, or
+                // - the message explicitly *addresses* the bot at the start (e.g. "@piotr ..." or "piotr: ..."),
+                //   rather than merely mentioning the name somewhere in the middle of the text.
+                let addressed_by_at = trimmed_lower.starts_with(&format!("@{}", bot_name_lower));
+                let addressed_by_name_prefix = if trimmed_lower.starts_with(&bot_name_lower) {
+                    let remainder = &trimmed_lower[bot_name_lower.len()..];
+                    remainder
+                        .chars()
+                        .next()
+                        .map(|c| c.is_whitespace() || matches!(c, ':' | ',' | ';' | '-' ))
+                        .unwrap_or(true)
+                } else {
+                    false
+                };
+                let mut is_explicit_interaction = !is_group || is_quote_reply || addressed_by_at || addressed_by_name_prefix;
 
                 // Also check native Signal mentions
                 if let Some(mentions) = &data.mentions {
                     for m in mentions {
                         if m.number.as_deref() == Some(&self.bot_number) || m.name.as_deref().unwrap_or("").to_lowercase().contains(&bot_name_lower) {
-                            is_mentioned = true;
+                            is_explicit_interaction = true;
                             break;
                         }
                     }
                 }
 
-                let (should_reply, prompt) = if is_group {
-                    if is_quote_reply || is_mentioned {
-                        (true, text.clone())
-                    } else {
-                        let mut rng = rand::rng();
-                        if rng.random_bool(0.10) { // 10% chance to just chime in
-                            (true, text.clone())
-                        } else {
-                            (false, String::new())
-                        }
+                // We always process messages; the LLM determines appropriateness to respond using intent classifier
+                let profile_key = envelope.source_number.clone().unwrap_or(source.clone());
+                let source_name = envelope.source_name.clone();
+
+                // Prepend Thread Context if quoting someone else
+                let mut final_prompt = text.clone();
+                if let Some(quote) = &data.quote {
+                    if quote.author != self.bot_number {
+                        // User is replying to someone else, but triggered Piotr
+                        let author_name = if quote.author == profile_key { "themselves" } else { &quote.author };
+                        final_prompt = format!("(Replying to quote from {}): {}", author_name, text);
                     }
-                } else {
-                    (true, text.clone())
-                };
-
-                if should_reply {
-                    let profile_key = envelope.source_number.clone().unwrap_or(source.clone());
-                    let source_name = envelope.source_name.clone();
-
-                    // Prepend Thread Context if quoting someone else
-                    let mut final_prompt = prompt.clone();
-                    if let Some(quote) = &data.quote {
-                        if quote.author != self.bot_number {
-                            // User is replying to someone else, but triggered Piotr
-                            let author_name = if quote.author == profile_key { "themselves" } else { &quote.author };
-                            final_prompt = format!("(Replying to quote from {}): {}", author_name, prompt);
-                        }
-                    }
-
-                    info!("Processing prompt from {}", crate::utils::anonymize(&source));
-                    let reply_address = envelope.source_uuid.clone().unwrap_or_else(|| source.clone());
-                    self.process_ai_request(reply_address, group_id, context_key, final_prompt, timestamp, profile_key, source_name).await;
-                } else {
-                    info!("Ignoring message from {} (No trigger)", crate::utils::anonymize(&source));
                 }
+
+                info!("Processing prompt from {}", crate::utils::anonymize(&source));
+                let reply_address = envelope.source_uuid.clone().unwrap_or_else(|| source.clone());
+                self.process_ai_request(reply_address, group_id, context_key, final_prompt, timestamp, profile_key, source_name, is_explicit_interaction).await;
             } else if let Some(reaction) = data.reaction {
                 // Handle Reaction
                 if reaction.target_author == self.bot_number {
@@ -163,7 +162,7 @@ impl SessionManager {
         }
     }
 
-    async fn process_ai_request(&self, reply_address: String, group_id: Option<String>, context_key: String, prompt: String, timestamp: u64, profile_key: String, source_name: Option<String>) {
+    async fn process_ai_request(&self, reply_address: String, group_id: Option<String>, context_key: String, prompt: String, timestamp: u64, profile_key: String, source_name: Option<String>, is_explicit_interaction: bool) {
         // Get or Create Sequencer
         let sequencer_tx = self.get_sequencer_tx(context_key.clone(), group_id.clone()).await;
 
@@ -172,6 +171,7 @@ impl SessionManager {
             timestamp,
             profile_key,
             source_name,
+            is_explicit_interaction,
         };
 
         // Send Ticket to Sequencer (Preserves Contextual Order)
@@ -223,7 +223,11 @@ impl SessionManager {
         let mut final_history = Vec::new();
 
         let target_len = self.config.bot.target_message_length_chars;
-        let format_instructions = format!("FORMATTING INSTRUCTION: Aim to respond with exactly one paragraph of around {} characters. You may use subsequent formatting paragraphs if absolutely necessary, but do so with increasing reluctance, as each paragraph is sent as an independent push notification message to the user.", target_len);
+        let format_instructions = if intent == "PRO" {
+            "FORMATTING INSTRUCTION: You are providing a detailed or complex response. You may write as much as necessary, using multiple paragraphs. Please format your response clearly.".to_string()
+        } else {
+            format!("FORMATTING INSTRUCTION: For casual conversation, aim to respond with exactly one paragraph of around {} characters. You may use subsequent paragraphs if necessary, but do so with reluctance, as each paragraph is a separate push notification. IMPORTANT: If the user explicitly asks for a long-form response (like an essay or detailed explanation), you may completely ignore this length limit and write as much as needed.", target_len)
+        };
         
         final_history.push(Content {
             role: "user".to_string(),
@@ -231,7 +235,7 @@ impl SessionManager {
         });
         final_history.push(Content {
             role: "model".to_string(),
-            parts: vec![Part { text: Some("Understood. I will strictly manage my paragraph count and length.".to_string()) }]
+            parts: vec![Part { text: Some("Understood. I will manage my length according to the context and user request.".to_string()) }]
         });
 
         // 1. Inject User Profile
@@ -349,11 +353,7 @@ impl SessionManager {
                     // Start Typing
                     let _ = signal_client_seq.send_typing(&reply_source, reply_group_id.as_deref()).await;
 
-                    // Pre-Processing (Intent & Mention Differentiation)
-                    // Differentiate a passing mention from a direct address
-                    let prompt_lower = request.prompt.to_lowercase();
-                    let bot_name_lower = self_clone_seq.config.bot.name.to_lowercase();
-                    let is_mentioned = prompt_lower.contains(&bot_name_lower) || prompt_lower.contains(&format!("@{}", bot_name_lower)) || prompt_lower.contains("￼");
+                    // Pre-Processing
                     let mut should_abort_generation = false;
 
                     let model_override = state_seq.get_model_preference(&context_key_seq).await;
@@ -371,11 +371,11 @@ impl SessionManager {
                         self_clone_seq.generate_text_response("OVERRIDE", &context_key_seq, &request.profile_key, request.source_name.clone(), Some(model), group_id_context.clone()).await
                     } else {
                         // Intent Classification (Auto Mode)
-                        let mut prompt_to_test = request.prompt.clone();
-                        if is_mentioned {
-                            // Let the LLM also decide if this string is talking ABOUT the bot or TO the bot (this helps save tokens/spams if we catch early)
-                            prompt_to_test = format!("SYSTEM: Analyze if the user is talking *to* you or just talking *about* you. Reply IGNORE if they are mentioning you in passing to someone else without expecting a response. If they are addressing you directly (e.g. just '@{}' or asking a question), categorize the intent normally as FLASH, SEARCH, PRO, or IMAGE. User prompt: {}", self_clone_seq.config.bot.name, request.prompt);
-                        }
+                        let prompt_to_test = if !request.is_explicit_interaction {
+                            format!("SYSTEM: Analyze this group chat message context. If it is appropriate for you to chime in unprompted to be helpful or funny, categorize the intent normally as FLASH, SEARCH, PRO, or IMAGE. Otherwise, reply IGNORE. User prompt: {}", request.prompt)
+                        } else {
+                            format!("SYSTEM: The user explicitly addressed you, so you MUST respond. Do NOT output IGNORE. Categorize intent normally as FLASH, SEARCH, PRO, or IMAGE. User prompt: {}", request.prompt)
+                        };
 
                         let intent = match ai_client_seq.classify_intent(&prompt_to_test).await {
                             Ok(i) => i,
