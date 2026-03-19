@@ -9,6 +9,7 @@ pub struct ContextRequest {
     pub timestamp: u64,
     pub profile_key: String,
     pub source_name: Option<String>,
+    pub is_explicit_interaction: bool,
 }
 
 pub type SequencerMap = HashMap<
