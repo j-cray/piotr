@@ -4,4 +4,4 @@
 .env
 config.json5
 data/
-.log
+*.log
