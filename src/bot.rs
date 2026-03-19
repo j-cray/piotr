@@ -222,6 +222,18 @@ impl SessionManager {
         // Inject Learned Examples if available
         let mut final_history = Vec::new();
 
+        let target_len = self.config.bot.target_message_length_chars;
+        let format_instructions = format!("FORMATTING INSTRUCTION: Aim to respond with exactly one paragraph of around {} characters. You may use subsequent formatting paragraphs if absolutely necessary, but do so with increasing reluctance, as each paragraph is sent as an independent push notification message to the user.", target_len);
+        
+        final_history.push(Content {
+            role: "user".to_string(),
+            parts: vec![Part { text: Some(format!("SYSTEM NOTE: {}", format_instructions)) }]
+        });
+        final_history.push(Content {
+            role: "model".to_string(),
+            parts: vec![Part { text: Some("Understood. I will strictly manage my paragraph count and length.".to_string()) }]
+        });
+
         // 1. Inject User Profile
         if let Ok(profile) = self.profile_manager.get_profile(profile_key, source_name.clone()).await {
             let display_name_for_profile = source_name.unwrap_or_else(|| profile_key.to_string());
@@ -452,7 +464,19 @@ impl SessionManager {
 
 
 
-                                if !self_clone_seq.config.bot.enable_message_splitting {
+                                let paragraphs: Vec<&str> = if self_clone_seq.config.bot.enable_paragraph_splitting {
+                                    text.split("\n\n").collect()
+                                } else {
+                                    vec![text.as_str()]
+                                };
+
+                                let is_document = text.contains("```") 
+                                    || text.contains("\n# ") 
+                                    || text.starts_with("# ")
+                                    || text.contains("\n## ")
+                                    || text.len() > 2000;
+
+                                if !self_clone_seq.config.bot.enable_message_splitting || is_document {
                                     let trimmed = text.trim();
                                     if !trimmed.is_empty() {
                                         let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
@@ -463,62 +487,22 @@ impl SessionManager {
                                         }
                                     }
                                 } else {
-                                    // Send Messages per paragraph, chunking if they exceed the target length
-                                    let target_len = self_clone_seq.config.bot.target_message_length_chars;
+                                    // Send Messages per paragraph cleanly
                                     let delay = tokio::time::Duration::from_millis(self_clone_seq.config.bot.message_delay_ms);
                                     let mut is_first = true;
 
-                                    let paragraphs: Vec<&str> = if self_clone_seq.config.bot.enable_paragraph_splitting {
-                                        text.split("\n\n").collect()
-                                    } else {
-                                        vec![text.as_str()]
-                                    };
-                                    
                                     for paragraph in paragraphs {
                                         let trimmed = paragraph.trim();
-                                        if !trimmed.is_empty() {
-                                            if trimmed.len() > target_len {
-                                                let mut current_chunk = String::new();
-                                                for word in trimmed.split_whitespace() {
-                                                    if current_chunk.len() + word.len() + 1 > target_len && !current_chunk.is_empty() {
-                                                        if !is_first { tokio::time::sleep(delay).await; }
-                                                        is_first = false;
+                                        if trimmed.is_empty() { continue; }
 
-                                                        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-                                                        if let Err(e) = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), &current_chunk, None).await {
-                                                            error!("Failed to send Signal response chunk: {:?}", e);
-                                                        } else {
-                                                            state_seq.insert_sent_message(ts, request.prompt.clone(), current_chunk.clone()).await;
-                                                        }
-                                                        current_chunk.clear();
-                                                    }
-                                                    if !current_chunk.is_empty() {
-                                                        current_chunk.push(' ');
-                                                    }
-                                                    current_chunk.push_str(word);
-                                                }
-                                                if !current_chunk.is_empty() {
-                                                    if !is_first { tokio::time::sleep(delay).await; }
-                                                    is_first = false;
+                                        if !is_first { tokio::time::sleep(delay).await; }
+                                        is_first = false;
 
-                                                    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-                                                    if let Err(e) = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), &current_chunk, None).await {
-                                                        error!("Failed to send Signal response final chunk: {:?}", e);
-                                                    } else {
-                                                        state_seq.insert_sent_message(ts, request.prompt.clone(), current_chunk.clone()).await;
-                                                    }
-                                                }
-                                            } else {
-                                                if !is_first { tokio::time::sleep(delay).await; }
-                                                is_first = false;
-
-                                                let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-                                                if let Err(e) = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), trimmed, None).await {
-                                                    error!("Failed to send Signal response: {:?}", e);
-                                                } else {
-                                                    state_seq.insert_sent_message(ts, request.prompt.clone(), trimmed.to_string()).await;
-                                                }
-                                            }
+                                        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+                                        if let Err(e) = signal_client_seq.send_message(&reply_source, reply_group_id.as_deref(), trimmed, None).await {
+                                            error!("Failed to send Signal response chunk: {:?}", e);
+                                        } else {
+                                            state_seq.insert_sent_message(ts, request.prompt.clone(), trimmed.to_string()).await;
                                         }
                                     }
                                 }
