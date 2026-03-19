@@ -204,10 +204,16 @@ impl SignalClient {
                                            stdin.write_all(b"\n").await.is_err() ||
                                            stdin.flush().await.is_err() {
                                             error!("Failed to write to signal-cli stdin. Triggering restart.");
-                                            let mut child = current_child.take().unwrap();
-                                            let _ = child.kill().await;
+                                            if let Some(mut child) = current_child.take() {
+                                                let _ = child.kill().await;
+                                            }
                                             current_stdin = None;
                                             reader = None;
+                                            
+                                            let mut map = pending_requests_clone.lock().unwrap();
+                                            for (_, tx) in map.drain() {
+                                                let _ = tx.send(Err(anyhow::anyhow!("Signal-cli stdin write failed, process restarting")));
+                                            }
                                         }
                                     }
                                 }
