@@ -5,3 +5,4 @@
 config.json5
 data/
 *.log
+dbus-session.conf
