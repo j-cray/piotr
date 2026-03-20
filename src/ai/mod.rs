@@ -1,13 +1,13 @@
 pub mod memory;
 
+use anyhow::Result;
+use google_cloud_auth::credentials::{AccessTokenCredentials, Builder as AuthBuilder};
+use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use serde_json::json;
-use anyhow::Result;
-use reqwest::{Client, StatusCode};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use std::time::{Duration, Instant};
-use google_cloud_auth::credentials::{Builder as AuthBuilder, AccessTokenCredentials};
+use tokio::sync::Mutex;
 use tokio::sync::OnceCell;
 
 // Correct global endpoint base URL
@@ -132,7 +132,6 @@ pub struct ReactionAnalysis {
     pub tags: Vec<String>, // e.g. "sarcastic", "supportive", "confused"
 }
 
-
 impl VertexClient {
     pub fn new(config: Arc<crate::config::AppConfig>) -> Self {
         Self {
@@ -144,13 +143,20 @@ impl VertexClient {
     }
 
     async fn get_token(&self) -> Result<String> {
-        let provider = self.token_provider.get_or_try_init(|| async {
-            AuthBuilder::default()
-                .with_quota_project_id(&self.config.ai.gcp_project_id)
-                .build_access_token_credentials()
-        }).await.map_err(|e| anyhow::anyhow!("Failed to build credentials provider: {}", e))?;
+        let provider = self
+            .token_provider
+            .get_or_try_init(|| async {
+                AuthBuilder::default()
+                    .with_quota_project_id(&self.config.ai.gcp_project_id)
+                    .build_access_token_credentials()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to build credentials provider: {}", e))?;
 
-        let access_token = provider.access_token().await.map_err(|e| anyhow::anyhow!("Failed to get access token: {}", e))?;
+        let access_token = provider
+            .access_token()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get access token: {}", e))?;
         Ok(access_token.token)
     }
 
@@ -161,7 +167,9 @@ impl VertexClient {
             EndpointType::ClassifyIntent => &self.rate_limiters.classify_intent,
             EndpointType::AnalyzeReaction => &self.rate_limiters.analyze_reaction,
             EndpointType::AnalyzeProfileUpdate => &self.rate_limiters.analyze_profile_update,
-            EndpointType::AnalyzeGroupProfileUpdate => &self.rate_limiters.analyze_group_profile_update,
+            EndpointType::AnalyzeGroupProfileUpdate => {
+                &self.rate_limiters.analyze_group_profile_update
+            }
             EndpointType::CountTokens => &self.rate_limiters.count_tokens,
         };
         let mut last = mutex.lock().await;
@@ -175,7 +183,12 @@ impl VertexClient {
         *last = Instant::now();
     }
 
-    pub async fn generate_content(&self, contents: Vec<Content>, model: &crate::config::ModelSettings, use_search: bool) -> Result<String> {
+    pub async fn generate_content(
+        &self,
+        contents: Vec<Content>,
+        model: &crate::config::ModelSettings,
+        use_search: bool,
+    ) -> Result<String> {
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
             API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, model.name
@@ -193,17 +206,20 @@ impl VertexClient {
         });
 
         if use_search {
-             if let Some(obj) = body_json.as_object_mut() {
-                 obj.insert("tools".to_string(), json!([{ "googleSearch": {} }]));
-             }
+            if let Some(obj) = body_json.as_object_mut() {
+                obj.insert("tools".to_string(), json!([{ "googleSearch": {} }]));
+            }
         }
 
         let mut retries = 0;
         loop {
-            self.wait_for_rate_limit(EndpointType::GenerateContent).await;
+            self.wait_for_rate_limit(EndpointType::GenerateContent)
+                .await;
             let token = self.get_token().await?; // Refresh token on loop in case it expired
 
-            let resp = self.http_client.post(&url)
+            let resp = self
+                .http_client
+                .post(&url)
                 .bearer_auth(&token)
                 .json(&body_json)
                 .send()
@@ -216,29 +232,43 @@ impl VertexClient {
                 let response: GenerateContentResponse = match serde_json::from_str(&resp_text) {
                     Ok(r) => r,
                     Err(e) => {
-                         tracing::error!("Failed to parse Vertex AI response: {}. Raw text length: {}", e, resp_text.len());
-                         return Ok("I ... I don't know what happened. The wires... they crossed.".to_string());
+                        tracing::error!(
+                            "Failed to parse Vertex AI response: {}. Raw text length: {}",
+                            e,
+                            resp_text.len()
+                        );
+                        return Ok(
+                            "I ... I don't know what happened. The wires... they crossed."
+                                .to_string(),
+                        );
                     }
                 };
 
                 if let Some(candidates) = response.candidates {
                     if let Some(first) = candidates.first() {
-                         // Check for finishReason
-                         if let Some(reason) = &first.finish_reason {
-                             if reason != "STOP" {
-                                 tracing::warn!("Vertex AI finishReason: {}. Safety ratings: {:?}", reason, first.safety_ratings);
-                                 if reason == "SAFETY" || reason == "RECITATION" {
-                                     return Ok(format!("I cannot answer that. Google says no ({})", reason));
-                                 }
-                             }
-                         }
+                        // Check for finishReason
+                        if let Some(reason) = &first.finish_reason {
+                            if reason != "STOP" {
+                                tracing::warn!(
+                                    "Vertex AI finishReason: {}. Safety ratings: {:?}",
+                                    reason,
+                                    first.safety_ratings
+                                );
+                                if reason == "SAFETY" || reason == "RECITATION" {
+                                    return Ok(format!(
+                                        "I cannot answer that. Google says no ({})",
+                                        reason
+                                    ));
+                                }
+                            }
+                        }
 
-                         if let Some(content) = &first.content {
-                             if let Some(parts) = &content.parts.first() {
+                        if let Some(content) = &first.content {
+                            if let Some(parts) = &content.parts.first() {
                                 if let Some(text) = &parts.text {
                                     return Ok(text.to_string());
                                 }
-                             }
+                            }
                         }
                     }
                 }
@@ -246,7 +276,6 @@ impl VertexClient {
                 // Fallback if structure is oddly empty even with success
                 tracing::warn!("Vertex AI returned success but no content found.");
                 return Ok("I have nothing to say about that.".to_string());
-
             } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
                 retries += 1;
                 if retries > 3 {
@@ -254,21 +283,29 @@ impl VertexClient {
                     anyhow::bail!("Vertex AI Error after retries: {} - {}", status, error_text);
                 }
                 let wait = Duration::from_secs(2u64.pow(retries));
-                tracing::warn!("Vertex AI request failed ({}), retrying in {:?}...", status, wait);
+                tracing::warn!(
+                    "Vertex AI request failed ({}), retrying in {:?}...",
+                    status,
+                    wait
+                );
                 tokio::time::sleep(wait).await;
                 continue;
             } else {
-                 let error_text = resp.text().await?;
-                 // Check if it's a 400 with safety block
-                 if status == StatusCode::BAD_REQUEST && error_text.contains("SAFETY") {
-                      return Ok("That's ... a bit too risky for me.".to_string());
-                 }
-                 anyhow::bail!("Vertex AI Error: {} - {}", status, error_text);
+                let error_text = resp.text().await?;
+                // Check if it's a 400 with safety block
+                if status == StatusCode::BAD_REQUEST && error_text.contains("SAFETY") {
+                    return Ok("That's ... a bit too risky for me.".to_string());
+                }
+                anyhow::bail!("Vertex AI Error: {} - {}", status, error_text);
             }
         }
     }
 
-    pub async fn generate_image(&self, prompt: &str, model: &crate::config::ModelSettings) -> Result<Vec<u8>> {
+    pub async fn generate_image(
+        &self,
+        prompt: &str,
+        model: &crate::config::ModelSettings,
+    ) -> Result<Vec<u8>> {
         let location = &self.config.ai.gcp_location;
         let url = format!(
             "https://{}-aiplatform.googleapis.com/v1/projects/{}/locations/{}/publishers/google/models/{}:predict",
@@ -288,7 +325,9 @@ impl VertexClient {
             self.wait_for_rate_limit(EndpointType::GenerateImage).await;
             let token = self.get_token().await?;
 
-            let resp = self.http_client.post(&url)
+            let resp = self
+                .http_client
+                .post(&url)
                 .bearer_auth(&token)
                 .json(&body)
                 .send()
@@ -299,7 +338,9 @@ impl VertexClient {
                 let json: serde_json::Value = resp.json().await?;
                 if let Some(predictions) = json.get("predictions").and_then(|p| p.as_array()) {
                     if let Some(first) = predictions.first() {
-                        if let Some(bytes_b64) = first.get("bytesBase64Encoded").and_then(|b| b.as_str()) {
+                        if let Some(bytes_b64) =
+                            first.get("bytesBase64Encoded").and_then(|b| b.as_str())
+                        {
                             use base64::{Engine as _, engine::general_purpose};
                             let bytes = general_purpose::STANDARD.decode(bytes_b64)?;
                             return Ok(bytes);
@@ -308,18 +349,26 @@ impl VertexClient {
                 }
                 anyhow::bail!("No image in response: {:?}", json);
             } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                 retries += 1;
-                 if retries > 3 {
-                     let error_text = resp.text().await?;
-                     anyhow::bail!("Vertex AI Imagen Error after retries: {} - {}", status, error_text);
-                 }
-                 let wait = Duration::from_secs(2u64.pow(retries));
-                 tracing::warn!("Vertex AI Imagen request failed ({}), retrying in {:?}...", status, wait);
-                 tokio::time::sleep(wait).await;
-                 continue;
+                retries += 1;
+                if retries > 3 {
+                    let error_text = resp.text().await?;
+                    anyhow::bail!(
+                        "Vertex AI Imagen Error after retries: {} - {}",
+                        status,
+                        error_text
+                    );
+                }
+                let wait = Duration::from_secs(2u64.pow(retries));
+                tracing::warn!(
+                    "Vertex AI Imagen request failed ({}), retrying in {:?}...",
+                    status,
+                    wait
+                );
+                tokio::time::sleep(wait).await;
+                continue;
             } else {
-                 let error_text = resp.text().await?;
-                 anyhow::bail!("Vertex AI Imagen Error: {} - {}", status, error_text);
+                let error_text = resp.text().await?;
+                anyhow::bail!("Vertex AI Imagen Error: {} - {}", status, error_text);
             }
         }
     }
@@ -328,12 +377,17 @@ impl VertexClient {
         tracing::info!("Classifying intent for prompt");
         let contents = vec![Content {
             role: "user".to_string(),
-            parts: vec![Part { text: Some(prompt.to_string()) }],
+            parts: vec![Part {
+                text: Some(prompt.to_string()),
+            }],
         }];
 
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, self.config.ai.models.classification.name
+            API_ENDPOINT,
+            self.config.ai.gcp_project_id,
+            self.config.ai.gcp_location,
+            self.config.ai.models.classification.name
         );
 
         let body = json!({
@@ -352,18 +406,24 @@ impl VertexClient {
             self.wait_for_rate_limit(EndpointType::ClassifyIntent).await;
             let token = self.get_token().await?;
 
-            let resp = self.http_client.post(&url)
+            let resp = self
+                .http_client
+                .post(&url)
                 .bearer_auth(&token)
                 .json(&body)
                 .send()
                 .await?;
 
-             let status = resp.status();
-             if status.is_success() {
-                 let json: serde_json::Value = resp.json().await?;
-                 if let Some(candidates) = json.get("candidates").and_then(|c| c.as_array()) {
+            let status = resp.status();
+            if status.is_success() {
+                let json: serde_json::Value = resp.json().await?;
+                if let Some(candidates) = json.get("candidates").and_then(|c| c.as_array()) {
                     if let Some(first) = candidates.first() {
-                         if let Some(parts) = first.get("content").and_then(|c| c.get("parts")).and_then(|p| p.as_array()) {
+                        if let Some(parts) = first
+                            .get("content")
+                            .and_then(|c| c.get("parts"))
+                            .and_then(|p| p.as_array())
+                        {
                             if let Some(text_part) = parts.first() {
                                 if let Some(text) = text_part.get("text").and_then(|t| t.as_str()) {
                                     return Ok(text.trim().to_uppercase());
@@ -373,24 +433,29 @@ impl VertexClient {
                     }
                 }
                 return Ok("FLASH".to_string());
-             } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                 retries += 1;
-                 if retries > 3 {
-                      tracing::error!("Intent classification failed after retries: {}", status);
-                      return Ok("FLASH".to_string()); // Fail open to default
-                 }
-                 let wait = Duration::from_millis(500 * 2u64.pow(retries));
-                 tokio::time::sleep(wait).await;
-                 continue;
-             } else {
-                 // Non-retryable error
-                 tracing::error!("Intent classification failed non-retryable: {}", status);
-                 return Ok("FLASH".to_string());
-             }
+            } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                retries += 1;
+                if retries > 3 {
+                    tracing::error!("Intent classification failed after retries: {}", status);
+                    return Ok("FLASH".to_string()); // Fail open to default
+                }
+                let wait = Duration::from_millis(500 * 2u64.pow(retries));
+                tokio::time::sleep(wait).await;
+                continue;
+            } else {
+                // Non-retryable error
+                tracing::error!("Intent classification failed non-retryable: {}", status);
+                return Ok("FLASH".to_string());
+            }
         }
     }
 
-    pub async fn analyze_reaction(&self, user_prompt: &str, bot_response: &str, emoji: &str) -> Result<ReactionAnalysis> {
+    pub async fn analyze_reaction(
+        &self,
+        user_prompt: &str,
+        bot_response: &str,
+        emoji: &str,
+    ) -> Result<ReactionAnalysis> {
         let system_prompt = r#"You are an emotional intelligence analyst for a chat bot.
 Your task is to analyze a user's emoji reaction to a bot's response in the context of their conversation.
 Determine if the reaction is POSITIVE (reinforces behavior) or NEGATIVE (discourages behavior).
@@ -416,12 +481,17 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
 
         let contents = vec![Content {
             role: "user".to_string(),
-            parts: vec![Part { text: Some(user_msg) }],
+            parts: vec![Part {
+                text: Some(user_msg),
+            }],
         }];
 
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, self.config.ai.models.classification.name
+            API_ENDPOINT,
+            self.config.ai.gcp_project_id,
+            self.config.ai.gcp_location,
+            self.config.ai.models.classification.name
         );
 
         let body = json!({
@@ -438,10 +508,13 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
 
         let mut retries = 0;
         loop {
-            self.wait_for_rate_limit(EndpointType::AnalyzeReaction).await;
+            self.wait_for_rate_limit(EndpointType::AnalyzeReaction)
+                .await;
             let token = self.get_token().await?;
 
-            let resp = self.http_client.post(&url)
+            let resp = self
+                .http_client
+                .post(&url)
                 .bearer_auth(&token)
                 .json(&body)
                 .send()
@@ -449,23 +522,31 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
 
             let status = resp.status();
             if status.is_success() {
-                 let json: serde_json::Value = resp.json().await?;
-                 // Extract text
-                 if let Some(candidates) = json.get("candidates").and_then(|c| c.as_array()) {
+                let json: serde_json::Value = resp.json().await?;
+                // Extract text
+                if let Some(candidates) = json.get("candidates").and_then(|c| c.as_array()) {
                     if let Some(first) = candidates.first() {
-                         if let Some(parts) = first.get("content").and_then(|c| c.get("parts")).and_then(|p| p.as_array()) {
+                        if let Some(parts) = first
+                            .get("content")
+                            .and_then(|c| c.get("parts"))
+                            .and_then(|p| p.as_array())
+                        {
                             if let Some(text_part) = parts.first() {
                                 if let Some(text) = text_part.get("text").and_then(|t| t.as_str()) {
                                     // Parse JSON from text
                                     match serde_json::from_str::<ReactionAnalysis>(text) {
                                         Ok(analysis) => return Ok(analysis),
                                         Err(e) => {
-                                            tracing::error!("Failed to parse analysis JSON: {}. Text length: {}", e, text.len());
+                                            tracing::error!(
+                                                "Failed to parse analysis JSON: {}. Text length: {}",
+                                                e,
+                                                text.len()
+                                            );
                                             // Fallback
                                             return Ok(ReactionAnalysis {
                                                 sentiment_score: 0.0,
                                                 reasoning: format!("Failed to parse: {}", text),
-                                                tags: vec!["parse_error".to_string()]
+                                                tags: vec!["parse_error".to_string()],
                                             });
                                         }
                                     }
@@ -474,28 +555,35 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
                         }
                     }
                 }
-                tracing::warn!("No content in analysis response: {}", serde_json::to_string(&json).unwrap_or_default());
+                tracing::warn!(
+                    "No content in analysis response: {}",
+                    serde_json::to_string(&json).unwrap_or_default()
+                );
                 return Ok(ReactionAnalysis {
                     sentiment_score: 0.0,
                     reasoning: "Safety or empty response".to_string(),
                     tags: vec![],
                 });
             } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                 retries += 1;
-                 if retries > 3 {
-                      anyhow::bail!("Analysis failed after retries: {}", status);
-                 }
-                 let wait = Duration::from_millis(500 * 2u64.pow(retries));
-                 tokio::time::sleep(wait).await;
-                 continue;
+                retries += 1;
+                if retries > 3 {
+                    anyhow::bail!("Analysis failed after retries: {}", status);
+                }
+                let wait = Duration::from_millis(500 * 2u64.pow(retries));
+                tokio::time::sleep(wait).await;
+                continue;
             } else {
-                 let error_text = resp.text().await?;
-                 anyhow::bail!("Analysis Error: {} - {}", status, error_text);
+                let error_text = resp.text().await?;
+                anyhow::bail!("Analysis Error: {} - {}", status, error_text);
             }
         }
     }
 
-    pub async fn analyze_profile_update(&self, current_profile: &crate::ai::memory::UserProfile, history: &str) -> Result<crate::ai::memory::UserProfile> {
+    pub async fn analyze_profile_update(
+        &self,
+        current_profile: &crate::ai::memory::UserProfile,
+        history: &str,
+    ) -> Result<crate::ai::memory::UserProfile> {
         let system_prompt = r#"You are a user profile manager for a chatbot.
 Your task is to analyze the recent conversation history and Update the user's profile.
 - name: Extract the user's name if they mentioned it. Keep existing if known and not changed.
@@ -528,12 +616,17 @@ Structure:
 
         let contents = vec![Content {
             role: "user".to_string(),
-            parts: vec![Part { text: Some(user_msg) }],
+            parts: vec![Part {
+                text: Some(user_msg),
+            }],
         }];
 
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, self.config.ai.models.classification.name
+            API_ENDPOINT,
+            self.config.ai.gcp_project_id,
+            self.config.ai.gcp_location,
+            self.config.ai.models.classification.name
         );
 
         let body = json!({
@@ -550,10 +643,13 @@ Structure:
 
         let mut retries = 0;
         loop {
-            self.wait_for_rate_limit(EndpointType::AnalyzeProfileUpdate).await;
+            self.wait_for_rate_limit(EndpointType::AnalyzeProfileUpdate)
+                .await;
             let token = self.get_token().await?;
 
-            let resp = self.http_client.post(&url)
+            let resp = self
+                .http_client
+                .post(&url)
                 .bearer_auth(&token)
                 .json(&body)
                 .send()
@@ -561,21 +657,33 @@ Structure:
 
             let status = resp.status();
             if status.is_success() {
-                 let json: serde_json::Value = resp.json().await?;
-                 if let Some(candidates) = json.get("candidates").and_then(|c| c.as_array()) {
+                let json: serde_json::Value = resp.json().await?;
+                if let Some(candidates) = json.get("candidates").and_then(|c| c.as_array()) {
                     if let Some(first) = candidates.first() {
-                         if let Some(parts) = first.get("content").and_then(|c| c.get("parts")).and_then(|p| p.as_array()) {
+                        if let Some(parts) = first
+                            .get("content")
+                            .and_then(|c| c.get("parts"))
+                            .and_then(|p| p.as_array())
+                        {
                             if let Some(text_part) = parts.first() {
                                 if let Some(text) = text_part.get("text").and_then(|t| t.as_str()) {
-                                    match serde_json::from_str::<crate::ai::memory::UserProfile>(text) {
+                                    match serde_json::from_str::<crate::ai::memory::UserProfile>(
+                                        text,
+                                    ) {
                                         Ok(mut profile) => {
                                             // Ensure ID and timestamp are handled correctly
                                             profile.id = current_profile.id.clone();
-                                            profile.last_updated = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
+                                            profile.last_updated = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)?
+                                                .as_secs();
                                             return Ok(profile);
-                                        },
+                                        }
                                         Err(e) => {
-                                            tracing::error!("Failed to parse profile update JSON: {}. Text length: {}", e, text.len());
+                                            tracing::error!(
+                                                "Failed to parse profile update JSON: {}. Text length: {}",
+                                                e,
+                                                text.len()
+                                            );
                                             // Fail safe: return original
                                             return Ok(current_profile.clone());
                                         }
@@ -585,24 +693,31 @@ Structure:
                         }
                     }
                 }
-                tracing::warn!("No content in profile analysis response: {}", serde_json::to_string(&json).unwrap_or_default());
+                tracing::warn!(
+                    "No content in profile analysis response: {}",
+                    serde_json::to_string(&json).unwrap_or_default()
+                );
                 return Ok(current_profile.clone());
             } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                 retries += 1;
-                 if retries > 3 {
-                      anyhow::bail!("Profile analysis failed after retries: {}", status);
-                 }
-                 let wait = Duration::from_millis(500 * 2u64.pow(retries));
-                 tokio::time::sleep(wait).await;
-                 continue;
+                retries += 1;
+                if retries > 3 {
+                    anyhow::bail!("Profile analysis failed after retries: {}", status);
+                }
+                let wait = Duration::from_millis(500 * 2u64.pow(retries));
+                tokio::time::sleep(wait).await;
+                continue;
             } else {
-                 let error_text = resp.text().await?;
-                 anyhow::bail!("Profile Analysis Error: {} - {}", status, error_text);
+                let error_text = resp.text().await?;
+                anyhow::bail!("Profile Analysis Error: {} - {}", status, error_text);
             }
         }
     }
 
-    pub async fn analyze_group_profile_update(&self, current_profile: &crate::ai::memory::GroupProfile, history: &str) -> Result<crate::ai::memory::GroupProfile> {
+    pub async fn analyze_group_profile_update(
+        &self,
+        current_profile: &crate::ai::memory::GroupProfile,
+        history: &str,
+    ) -> Result<crate::ai::memory::GroupProfile> {
         let system_prompt = r#"You are a group profile manager for a chatbot in a group chat.
 Your task is to analyze the recent conversation history and Update the group's profile.
 - group_name: Extract the group's name if it was explicitly mentioned. Keep existing if known and not changed.
@@ -635,12 +750,17 @@ Structure:
 
         let contents = vec![Content {
             role: "user".to_string(),
-            parts: vec![Part { text: Some(user_msg) }],
+            parts: vec![Part {
+                text: Some(user_msg),
+            }],
         }];
 
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
-            API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, self.config.ai.models.classification.name
+            API_ENDPOINT,
+            self.config.ai.gcp_project_id,
+            self.config.ai.gcp_location,
+            self.config.ai.models.classification.name
         );
 
         let body = json!({
@@ -657,10 +777,13 @@ Structure:
 
         let mut retries = 0;
         loop {
-            self.wait_for_rate_limit(EndpointType::AnalyzeGroupProfileUpdate).await;
+            self.wait_for_rate_limit(EndpointType::AnalyzeGroupProfileUpdate)
+                .await;
             let token = self.get_token().await?;
 
-            let resp = self.http_client.post(&url)
+            let resp = self
+                .http_client
+                .post(&url)
                 .bearer_auth(&token)
                 .json(&body)
                 .send()
@@ -668,21 +791,33 @@ Structure:
 
             let status = resp.status();
             if status.is_success() {
-                 let json: serde_json::Value = resp.json().await?;
-                 if let Some(candidates) = json.get("candidates").and_then(|c| c.as_array()) {
+                let json: serde_json::Value = resp.json().await?;
+                if let Some(candidates) = json.get("candidates").and_then(|c| c.as_array()) {
                     if let Some(first) = candidates.first() {
-                         if let Some(parts) = first.get("content").and_then(|c| c.get("parts")).and_then(|p| p.as_array()) {
+                        if let Some(parts) = first
+                            .get("content")
+                            .and_then(|c| c.get("parts"))
+                            .and_then(|p| p.as_array())
+                        {
                             if let Some(text_part) = parts.first() {
                                 if let Some(text) = text_part.get("text").and_then(|t| t.as_str()) {
-                                    match serde_json::from_str::<crate::ai::memory::GroupProfile>(text) {
+                                    match serde_json::from_str::<crate::ai::memory::GroupProfile>(
+                                        text,
+                                    ) {
                                         Ok(mut profile) => {
                                             // Ensure ID and timestamp are handled correctly
                                             profile.id = current_profile.id.clone();
-                                            profile.last_updated = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
+                                            profile.last_updated = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)?
+                                                .as_secs();
                                             return Ok(profile);
-                                        },
+                                        }
                                         Err(e) => {
-                                            tracing::error!("Failed to parse group profile update JSON: {}. Text length: {}", e, text.len());
+                                            tracing::error!(
+                                                "Failed to parse group profile update JSON: {}. Text length: {}",
+                                                e,
+                                                text.len()
+                                            );
                                             // Fail safe: return original
                                             return Ok(current_profile.clone());
                                         }
@@ -692,24 +827,31 @@ Structure:
                         }
                     }
                 }
-                tracing::warn!("No content in group profile analysis response: {}", serde_json::to_string(&json).unwrap_or_default());
+                tracing::warn!(
+                    "No content in group profile analysis response: {}",
+                    serde_json::to_string(&json).unwrap_or_default()
+                );
                 return Ok(current_profile.clone());
             } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                 retries += 1;
-                 if retries > 3 {
-                      anyhow::bail!("Group Profile analysis failed after retries: {}", status);
-                 }
-                 let wait = Duration::from_millis(500 * 2u64.pow(retries));
-                 tokio::time::sleep(wait).await;
-                 continue;
+                retries += 1;
+                if retries > 3 {
+                    anyhow::bail!("Group Profile analysis failed after retries: {}", status);
+                }
+                let wait = Duration::from_millis(500 * 2u64.pow(retries));
+                tokio::time::sleep(wait).await;
+                continue;
             } else {
-                 let error_text = resp.text().await?;
-                 anyhow::bail!("Group Profile Analysis Error: {} - {}", status, error_text);
+                let error_text = resp.text().await?;
+                anyhow::bail!("Group Profile Analysis Error: {} - {}", status, error_text);
             }
         }
     }
 
-    pub async fn count_tokens(&self, contents: Vec<Content>, model: &crate::config::ModelSettings) -> Result<i32> {
+    pub async fn count_tokens(
+        &self,
+        contents: Vec<Content>,
+        model: &crate::config::ModelSettings,
+    ) -> Result<i32> {
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:countTokens",
             API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, model.name
@@ -726,7 +868,9 @@ Structure:
             self.wait_for_rate_limit(EndpointType::CountTokens).await;
             let token = self.get_token().await?;
 
-            let resp = self.http_client.post(&url)
+            let resp = self
+                .http_client
+                .post(&url)
                 .bearer_auth(&token)
                 .json(&body)
                 .send()
@@ -740,21 +884,24 @@ Structure:
                 }
                 anyhow::bail!("No totalTokens in response: {:?}", json);
             } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                 retries += 1;
-                 if retries > 3 {
-                      let error_text = resp.text().await?;
-                      anyhow::bail!("CountTokens failed after retries: {} - {}", status, error_text);
-                 }
-                 let wait = Duration::from_millis(500 * 2u64.pow(retries));
-                 tokio::time::sleep(wait).await;
-                 continue;
+                retries += 1;
+                if retries > 3 {
+                    let error_text = resp.text().await?;
+                    anyhow::bail!(
+                        "CountTokens failed after retries: {} - {}",
+                        status,
+                        error_text
+                    );
+                }
+                let wait = Duration::from_millis(500 * 2u64.pow(retries));
+                tokio::time::sleep(wait).await;
+                continue;
             } else {
-                 let error_text = resp.text().await?;
-                 anyhow::bail!("CountTokens Error: {} - {}", status, error_text);
+                let error_text = resp.text().await?;
+                anyhow::bail!("CountTokens Error: {} - {}", status, error_text);
             }
         }
     }
-
 }
 
 #[cfg(test)]
@@ -769,7 +916,8 @@ mod tests {
             Err(_) => return,
         };
         // Skip live tests if using placeholder config
-        if config.ai.gcp_project_id.is_empty() || config.ai.gcp_project_id == "your-gcp-project-id" {
+        if config.ai.gcp_project_id.is_empty() || config.ai.gcp_project_id == "your-gcp-project-id"
+        {
             println!("Skipping live test: real GCP Project ID not configured");
             return;
         }
@@ -777,16 +925,27 @@ mod tests {
 
         let contents = vec![Content {
             role: "user".to_string(),
-            parts: vec![Part { text: Some("Hello world".to_string()) }]
+            parts: vec![Part {
+                text: Some("Hello world".to_string()),
+            }],
         }];
 
-        match client.count_tokens(contents, &crate::config::ModelSettings { name: "gemini-3-flash-preview".to_string(), ..Default::default() }).await {
+        match client
+            .count_tokens(
+                contents,
+                &crate::config::ModelSettings {
+                    name: "gemini-3-flash-preview".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+        {
             Ok(count) => {
                 println!("Token count: {}", count);
                 assert!(count > 0);
-            },
+            }
             Err(e) => {
-                 panic!("Count tokens failed: {:?}", e);
+                panic!("Count tokens failed: {:?}", e);
             }
         }
     }
@@ -797,7 +956,8 @@ mod tests {
             Ok(c) => Arc::new(c),
             Err(_) => return,
         };
-        if config.ai.gcp_project_id.is_empty() || config.ai.gcp_project_id == "your-gcp-project-id" {
+        if config.ai.gcp_project_id.is_empty() || config.ai.gcp_project_id == "your-gcp-project-id"
+        {
             println!("Skipping live test: real GCP Project ID not configured");
             return;
         }
@@ -809,7 +969,7 @@ mod tests {
             Ok(intent) => {
                 println!("Direct invocation intent: {}", intent);
                 assert_ne!(intent, "IGNORE");
-            },
+            }
             Err(e) => panic!("Classification failed: {:?}", e),
         }
 
@@ -819,7 +979,7 @@ mod tests {
             Ok(intent) => {
                 println!("Passing mention intent: {}", intent);
                 assert_eq!(intent, "IGNORE");
-            },
+            }
             Err(e) => panic!("Classification failed: {:?}", e),
         }
     }
@@ -879,22 +1039,28 @@ mod tests {
         // Test base64 image decoding logic using a dummy pixel
         // A valid 1x1 transparent PNG structure conceptually
         let b64_pixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
-        let raw_json = format!(r#"{{
+        let raw_json = format!(
+            r#"{{
             "predictions": [
                 {{
                     "bytesBase64Encoded": "{}"
                 }}
             ]
-        }}"#, b64_pixel);
+        }}"#,
+            b64_pixel
+        );
 
         let json: serde_json::Value = serde_json::from_str(&raw_json).unwrap();
         let predictions = json.get("predictions").and_then(|p| p.as_array()).unwrap();
         let first = predictions.first().unwrap();
-        let bytes_b64 = first.get("bytesBase64Encoded").and_then(|b| b.as_str()).unwrap();
+        let bytes_b64 = first
+            .get("bytesBase64Encoded")
+            .and_then(|b| b.as_str())
+            .unwrap();
 
         use base64::{Engine as _, engine::general_purpose};
         let bytes = general_purpose::STANDARD.decode(bytes_b64).unwrap();
-        
+
         assert!(bytes.len() > 0);
         assert_eq!(&bytes[0..4], &[0x89, 0x50, 0x4e, 0x47]); // PNG header
     }
@@ -905,17 +1071,21 @@ mod tests {
             Ok(c) => Arc::new(c),
             Err(_) => return,
         };
-        if config.ai.gcp_project_id.is_empty() || config.ai.gcp_project_id == "your-gcp-project-id" {
+        if config.ai.gcp_project_id.is_empty() || config.ai.gcp_project_id == "your-gcp-project-id"
+        {
             println!("Skipping live test: real GCP Project ID not configured");
             return;
         }
         let client = VertexClient::new(config.clone());
 
-        match client.generate_image("A tiny red dot", &config.ai.models.imagen).await {
+        match client
+            .generate_image("A tiny red dot", &config.ai.models.imagen)
+            .await
+        {
             Ok(bytes) => {
                 println!("Image generated successfully, size: {} bytes", bytes.len());
                 assert!(bytes.len() > 0);
-            },
+            }
             Err(e) => panic!("Image generation failed: {:?}", e),
         }
     }
@@ -937,8 +1107,12 @@ mod tests {
         // Missing role should fail according to our strict struct definitions usually,
         // but let's see if serde handles it based on Option/Defaults.
         // Actually, role in Content is String, not Option<String>, so it MUST fail.
-        let parsed: Result<GenerateContentResponse, _> = serde_json::from_str(raw_json_missing_fields);
-        assert!(parsed.is_err(), "Deserialization should fail when required fields are missing");
+        let parsed: Result<GenerateContentResponse, _> =
+            serde_json::from_str(raw_json_missing_fields);
+        assert!(
+            parsed.is_err(),
+            "Deserialization should fail when required fields are missing"
+        );
 
         let raw_garbage = r#"This is not JSON at all"#;
         let parsed2: Result<GenerateContentResponse, _> = serde_json::from_str(raw_garbage);
@@ -951,7 +1125,9 @@ mod tests {
         // preventing injection via malformed fields.
         let content = Content {
             role: "user".to_string(),
-            parts: vec![Part { text: Some("Normal text\nwith \"quotes\" and \\slashes".to_string()) }],
+            parts: vec![Part {
+                text: Some("Normal text\nwith \"quotes\" and \\slashes".to_string()),
+            }],
         };
 
         let serialized = serde_json::to_string(&content).unwrap();
@@ -959,7 +1135,10 @@ mod tests {
         let deserialized: Content = serde_json::from_str(&serialized).unwrap();
 
         assert_eq!(deserialized.role, "user");
-        assert_eq!(deserialized.parts[0].text.as_deref(), Some("Normal text\nwith \"quotes\" and \\slashes"));
+        assert_eq!(
+            deserialized.parts[0].text.as_deref(),
+            Some("Normal text\nwith \"quotes\" and \\slashes")
+        );
     }
 
     #[tokio::test]
@@ -994,7 +1173,10 @@ mod tests {
         }"#;
         let parsed: GenerateContentResponse = serde_json::from_str(edge_case_json).unwrap();
         let candidates = parsed.candidates.unwrap();
-        let text = candidates[0].content.as_ref().unwrap().parts[0].text.as_deref().unwrap();
+        let text = candidates[0].content.as_ref().unwrap().parts[0]
+            .text
+            .as_deref()
+            .unwrap();
 
         // The consuming code does `.trim().to_uppercase()`.
         let final_intent = text.trim().to_uppercase();
@@ -1008,21 +1190,36 @@ mod tests {
 
         // First call should be instant (since new() sets them to 2 secs in the past)
         let start = Instant::now();
-        client.wait_for_rate_limit(EndpointType::GenerateContent).await;
-        
+        client
+            .wait_for_rate_limit(EndpointType::GenerateContent)
+            .await;
+
         // Second call to same endpoint should take ~1.5 seconds
-        client.wait_for_rate_limit(EndpointType::GenerateContent).await;
+        client
+            .wait_for_rate_limit(EndpointType::GenerateContent)
+            .await;
         let elapsed = start.elapsed();
-        
+
         // Use a generous upper bound for CI environments
-        assert!(elapsed >= Duration::from_millis(1400), "Should wait for rate limit");
-        assert!(elapsed < Duration::from_millis(3000), "Should not wait excessively");
+        assert!(
+            elapsed >= Duration::from_millis(1400),
+            "Should wait for rate limit"
+        );
+        assert!(
+            elapsed < Duration::from_millis(3000),
+            "Should not wait excessively"
+        );
 
         // Call to a different endpoint should be instant because they are independent
         let start2 = Instant::now();
-        client.wait_for_rate_limit(EndpointType::ClassifyIntent).await;
+        client
+            .wait_for_rate_limit(EndpointType::ClassifyIntent)
+            .await;
         let elapsed2 = start2.elapsed();
-        assert!(elapsed2 < Duration::from_millis(100), "Independent endpoint should not be blocked");
+        assert!(
+            elapsed2 < Duration::from_millis(100),
+            "Independent endpoint should not be blocked"
+        );
     }
 
     #[tokio::test]
@@ -1034,13 +1231,23 @@ mod tests {
 
         // First call should be instant
         let start = Instant::now();
-        client.wait_for_rate_limit(EndpointType::GenerateContent).await;
-        
+        client
+            .wait_for_rate_limit(EndpointType::GenerateContent)
+            .await;
+
         // Second call should wait ~300ms
-        client.wait_for_rate_limit(EndpointType::GenerateContent).await;
+        client
+            .wait_for_rate_limit(EndpointType::GenerateContent)
+            .await;
         let elapsed = start.elapsed();
-        
-        assert!(elapsed >= Duration::from_millis(250), "Should wait according to config cooldown");
-        assert!(elapsed < Duration::from_millis(1000), "Should not wait excessively");
+
+        assert!(
+            elapsed >= Duration::from_millis(250),
+            "Should wait according to config cooldown"
+        );
+        assert!(
+            elapsed < Duration::from_millis(1000),
+            "Should not wait excessively"
+        );
     }
 }

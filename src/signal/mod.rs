@@ -1,13 +1,13 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
-use tracing::{info, error, warn};
+use tracing::{error, info, warn};
 
 #[derive(Serialize)]
 #[allow(dead_code)]
@@ -118,12 +118,18 @@ pub struct SignalClient {
     user_phone: String,
     tx: mpsc::Sender<Value>,
     next_request_id: Arc<AtomicUsize>,
-    pending_requests: Arc<std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<Result<()>>>>>,
+    pending_requests: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, tokio::sync::oneshot::Sender<Result<()>>>,
+        >,
+    >,
 }
 
 impl SignalClient {
     fn next_id(&self) -> String {
-        self.next_request_id.fetch_add(1, Ordering::SeqCst).to_string()
+        self.next_request_id
+            .fetch_add(1, Ordering::SeqCst)
+            .to_string()
     }
     pub fn user_phone(&self) -> &str {
         &self.user_phone
@@ -140,7 +146,10 @@ impl SignalClient {
         }
     }
 
-    pub async fn new(user_phone: &str, data_path: &str) -> Result<(Self, mpsc::Receiver<SignalMessage>)> {
+    pub async fn new(
+        user_phone: &str,
+        data_path: &str,
+    ) -> Result<(Self, mpsc::Receiver<SignalMessage>)> {
         // Validate E.164 phone number format before passing to external process.
         // Length and prefix are checked before any slice access.
         let valid_phone = user_phone.starts_with('+')
@@ -148,7 +157,10 @@ impl SignalClient {
             && user_phone.len() <= 16
             && user_phone[1..].chars().all(|c| c.is_ascii_digit());
         if !valid_phone {
-            anyhow::bail!("Invalid phone number format '{}': expected E.164 (e.g. +12345678901)", user_phone);
+            anyhow::bail!(
+                "Invalid phone number format '{}': expected E.164 (e.g. +12345678901)",
+                user_phone
+            );
         }
 
         info!("Starting robust signal-cli supervisor for user: [REDACTED]");
@@ -156,7 +168,10 @@ impl SignalClient {
         let (tx_in, mut rx_in) = mpsc::channel::<Value>(100);
         let (tx_out, rx_out) = mpsc::channel::<SignalMessage>(100);
 
-        let pending_requests = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<String, tokio::sync::oneshot::Sender<Result<()>>>::new()));
+        let pending_requests = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+            String,
+            tokio::sync::oneshot::Sender<Result<()>>,
+        >::new()));
         let pending_requests_clone = pending_requests.clone();
 
         let phone_clone = user_phone.to_string();
@@ -171,13 +186,21 @@ impl SignalClient {
 
             let mut current_child: Option<tokio::process::Child> = None;
             let mut current_stdin: Option<tokio::process::ChildStdin> = None;
-            let mut reader: Option<tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>> = None;
+            let mut reader: Option<
+                tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+            > = None;
 
             async fn reset_process(
                 current_child: &mut Option<tokio::process::Child>,
                 current_stdin: &mut Option<tokio::process::ChildStdin>,
-                reader: &mut Option<tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>>,
-                pending_requests: &Arc<std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<Result<()>>>>>,
+                reader: &mut Option<
+                    tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+                >,
+                pending_requests: &Arc<
+                    std::sync::Mutex<
+                        std::collections::HashMap<String, tokio::sync::oneshot::Sender<Result<()>>>,
+                    >,
+                >,
                 error_message: &'static str,
             ) {
                 if let Some(mut child) = current_child.take() {
@@ -199,29 +222,37 @@ impl SignalClient {
                         if last_spawn_time.elapsed().as_secs() > 10 {
                             restart_delay_secs = INITIAL_RESTART_DELAY_SECS;
                         }
-                        error!("Waiting {}s before restarting signal-cli...", restart_delay_secs);
-                        tokio::time::sleep(std::time::Duration::from_secs(restart_delay_secs)).await;
-                        restart_delay_secs = std::cmp::min(restart_delay_secs * 2, MAX_RESTART_DELAY_SECS);
+                        error!(
+                            "Waiting {}s before restarting signal-cli...",
+                            restart_delay_secs
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(restart_delay_secs))
+                            .await;
+                        restart_delay_secs =
+                            std::cmp::min(restart_delay_secs * 2, MAX_RESTART_DELAY_SECS);
                     }
                     is_first_spawn = false;
 
                     info!("Spawning signal-cli process");
                     let mut child = match Command::new("signal-cli")
-                        .arg("--config").arg(&data_path_clone)
-                        .arg("-u").arg(&phone_clone)
+                        .arg("--config")
+                        .arg(&data_path_clone)
+                        .arg("-u")
+                        .arg(&phone_clone)
                         .arg("--output=json")
                         .arg("jsonRpc")
                         .stdin(Stdio::piped())
                         .stdout(Stdio::piped())
                         .stderr(Stdio::inherit())
-                        .spawn() {
-                            Ok(c) => c,
-                            Err(e) => {
-                                error!("Failed to spawn signal-cli: {}", e);
-                                continue;
-                            }
-                        };
-                    
+                        .spawn()
+                    {
+                        Ok(c) => c,
+                        Err(e) => {
+                            error!("Failed to spawn signal-cli: {}", e);
+                            continue;
+                        }
+                    };
+
                     let stdin = match child.stdin.take() {
                         Some(s) => s,
                         None => {
@@ -363,15 +394,24 @@ impl SignalClient {
             }
         });
 
-        Ok((Self {
-            user_phone: user_phone.to_string(),
-            tx: tx_in,
-            next_request_id: Arc::new(AtomicUsize::new(1)),
-            pending_requests,
-        }, rx_out))
+        Ok((
+            Self {
+                user_phone: user_phone.to_string(),
+                tx: tx_in,
+                next_request_id: Arc::new(AtomicUsize::new(1)),
+                pending_requests,
+            },
+            rx_out,
+        ))
     }
 
-    pub async fn send_message(&self, recipient: &str, group_id: Option<&str>, message: &str, attachment: Option<&str>) -> Result<()> {
+    pub async fn send_message(
+        &self,
+        recipient: &str,
+        group_id: Option<&str>,
+        message: &str,
+        attachment: Option<&str>,
+    ) -> Result<()> {
         let mut params = if let Some(gid) = group_id {
             json!({
                 "groupId": gid,
@@ -385,9 +425,9 @@ impl SignalClient {
         };
 
         if let Some(att) = attachment {
-             if let Some(obj) = params.as_object_mut() {
-                 obj.insert("attachment".to_string(), json!([att]));
-             }
+            if let Some(obj) = params.as_object_mut() {
+                obj.insert("attachment".to_string(), json!([att]));
+            }
         }
 
         let id_str = self.next_id();
@@ -470,7 +510,9 @@ impl SignalClient {
             Ok(Ok(Err(e))) => Err(e),
             Ok(Err(_)) => {
                 self.pending_requests.lock().unwrap().remove(&id_str);
-                Err(anyhow::anyhow!("Signal CLI response channel dropped unexpectedly"))
+                Err(anyhow::anyhow!(
+                    "Signal CLI response channel dropped unexpectedly"
+                ))
             }
             Err(_) => {
                 self.pending_requests.lock().unwrap().remove(&id_str);
@@ -480,7 +522,10 @@ impl SignalClient {
     }
 
     async fn send_payload(&self, payload: &Value) -> Result<()> {
-        self.tx.send(payload.clone()).await.map_err(|_| anyhow::anyhow!("Failed to send payload to background task"))?;
+        self.tx
+            .send(payload.clone())
+            .await
+            .map_err(|_| anyhow::anyhow!("Failed to send payload to background task"))?;
         Ok(())
     }
 }
@@ -580,7 +625,10 @@ mod tests {
         }"#;
 
         let parsed: Result<JsonRpcNotification, _> = serde_json::from_str(raw_json);
-        assert!(parsed.is_ok(), "Should parse envelope safely even if dataMessage is entirely missing");
+        assert!(
+            parsed.is_ok(),
+            "Should parse envelope safely even if dataMessage is entirely missing"
+        );
 
         let notif = parsed.unwrap();
         let env = notif.params.envelope.unwrap();
@@ -631,7 +679,8 @@ mod tests {
         }
 
         // This simulates a DoS attempt via giant payloads on the JSON parser
-        let raw_json = format!(r#"{{
+        let raw_json = format!(
+            r#"{{
             "method": "receive",
             "params": {{
                 "envelope": {{
@@ -648,12 +697,22 @@ mod tests {
                     }}
                 }}
             }}
-        }}"#, long_text);
+        }}"#,
+            long_text
+        );
 
         let parsed: Result<JsonRpcNotification, _> = serde_json::from_str(&raw_json);
         assert!(parsed.is_ok());
 
-        let quote = parsed.unwrap().params.envelope.unwrap().data_message.unwrap().quote.unwrap();
+        let quote = parsed
+            .unwrap()
+            .params
+            .envelope
+            .unwrap()
+            .data_message
+            .unwrap()
+            .quote
+            .unwrap();
         assert_eq!(quote.text.len(), 10_000);
     }
 }

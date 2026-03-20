@@ -1,6 +1,6 @@
+use crate::ai::Content;
 use std::collections::{HashMap, VecDeque};
 use tokio::sync::{mpsc, oneshot};
-use crate::ai::Content;
 
 pub type DestinationInfo = (String, Option<String>); // (source, group_id)
 
@@ -12,10 +12,7 @@ pub struct ContextRequest {
     pub is_explicit_interaction: bool,
 }
 
-pub type SequencerMap = HashMap<
-    String,
-    mpsc::UnboundedSender<(DestinationInfo, ContextRequest)>
->;
+pub type SequencerMap = HashMap<String, mpsc::UnboundedSender<(DestinationInfo, ContextRequest)>>;
 
 // Enum defining all operations our Actor will handle
 pub enum StateCommand {
@@ -79,9 +76,9 @@ pub enum StateCommand {
 // The internal state holding struct running in the background task
 struct StateActor {
     history: HashMap<String, VecDeque<Content>>,
-    history_order: VecDeque<String>,               // Tracks access order for LRU eviction
+    history_order: VecDeque<String>, // Tracks access order for LRU eviction
     sequencers: SequencerMap,
-    sequencers_order: VecDeque<String>,            // Tracks access order for LRU eviction
+    sequencers_order: VecDeque<String>, // Tracks access order for LRU eviction
     model_preferences: HashMap<String, String>,
     sent_messages: HashMap<u64, (String, String)>, // Timestamp -> (Prompt, Response)
     sent_messages_order: VecDeque<u64>,            // Insertion order for eviction
@@ -124,30 +121,47 @@ impl StateActor {
     async fn run(mut self) {
         while let Some(cmd) = self.receiver.recv().await {
             match cmd {
-                StateCommand::AddUserMessage { context_key, content } => {
+                StateCommand::AddUserMessage {
+                    context_key,
+                    content,
+                } => {
                     if !self.history.contains_key(&context_key) {
                         self.check_history_capacity();
                         self.history_order.push_back(context_key.clone());
                     } else {
                         self.touch_history(&context_key);
                     }
-                    let chat_history = self.history.entry(context_key).or_insert_with(VecDeque::new);
+                    let chat_history = self
+                        .history
+                        .entry(context_key)
+                        .or_insert_with(VecDeque::new);
                     chat_history.push_back(content);
                 }
-                StateCommand::AddModelMessage { context_key, content } => {
+                StateCommand::AddModelMessage {
+                    context_key,
+                    content,
+                } => {
                     if !self.history.contains_key(&context_key) {
                         self.check_history_capacity();
                         self.history_order.push_back(context_key.clone());
                     } else {
                         self.touch_history(&context_key);
                     }
-                    let chat_history = self.history.entry(context_key).or_insert_with(VecDeque::new);
+                    let chat_history = self
+                        .history
+                        .entry(context_key)
+                        .or_insert_with(VecDeque::new);
                     chat_history.push_back(content);
                 }
                 StateCommand::GetHistorySnapshot { context_key, resp } => {
                     let snapshot = if self.history.contains_key(&context_key) {
                         self.touch_history(&context_key);
-                        self.history.get(&context_key).unwrap().iter().cloned().collect()
+                        self.history
+                            .get(&context_key)
+                            .unwrap()
+                            .iter()
+                            .cloned()
+                            .collect()
                     } else {
                         Vec::new()
                     };
@@ -166,7 +180,10 @@ impl StateActor {
                     self.history.remove(&context_key);
                     self.history_order.retain(|x| x != &context_key);
                 }
-                StateCommand::PruneHistory { context_key, num_messages } => {
+                StateCommand::PruneHistory {
+                    context_key,
+                    num_messages,
+                } => {
                     if self.history.contains_key(&context_key) {
                         self.touch_history(&context_key);
                         let hist = self.history.get_mut(&context_key).unwrap();
@@ -218,9 +235,12 @@ impl StateActor {
                 StateCommand::InsertSequencerTx { context_key, tx } => {
                     // Cleanup any closed sequencers first to save capacity
                     self.sequencers.retain(|_, sender| !sender.is_closed());
-                    self.sequencers_order.retain(|k| self.sequencers.contains_key(k));
-                    
-                    if !self.sequencers.contains_key(&context_key) && self.sequencers.len() >= MAX_SEQUENCERS {
+                    self.sequencers_order
+                        .retain(|k| self.sequencers.contains_key(k));
+
+                    if !self.sequencers.contains_key(&context_key)
+                        && self.sequencers.len() >= MAX_SEQUENCERS
+                    {
                         if let Some(oldest) = self.sequencers_order.pop_front() {
                             self.sequencers.remove(&oldest);
                         }
@@ -246,7 +266,11 @@ impl StateActor {
                 StateCommand::RemoveModelPreference { context_key } => {
                     self.model_preferences.remove(&context_key);
                 }
-                StateCommand::InsertSentMessage { timestamp, prompt, response } => {
+                StateCommand::InsertSentMessage {
+                    timestamp,
+                    prompt,
+                    response,
+                } => {
                     // Evict oldest entry if at capacity to prevent unbounded memory growth
                     if self.sent_messages.len() >= MAX_SENT_MESSAGES {
                         if let Some(oldest_ts) = self.sent_messages_order.pop_front() {
@@ -287,25 +311,36 @@ impl StateManager {
 
     // --- History Management ---
     pub async fn add_user_message(&self, context_key: &str, content: Content) {
-        let _ = self.sender.send(StateCommand::AddUserMessage {
-            context_key: context_key.to_string(),
-            content,
-        }).await;
+        let _ = self
+            .sender
+            .send(StateCommand::AddUserMessage {
+                context_key: context_key.to_string(),
+                content,
+            })
+            .await;
     }
 
     pub async fn add_model_message(&self, context_key: &str, content: Content) {
-        let _ = self.sender.send(StateCommand::AddModelMessage {
-            context_key: context_key.to_string(),
-            content,
-        }).await;
+        let _ = self
+            .sender
+            .send(StateCommand::AddModelMessage {
+                context_key: context_key.to_string(),
+                content,
+            })
+            .await;
     }
 
     pub async fn get_history_snapshot(&self, context_key: &str) -> Vec<Content> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        if self.sender.send(StateCommand::GetHistorySnapshot {
-            context_key: context_key.to_string(),
-            resp: resp_tx,
-        }).await.is_ok() {
+        if self
+            .sender
+            .send(StateCommand::GetHistorySnapshot {
+                context_key: context_key.to_string(),
+                resp: resp_tx,
+            })
+            .await
+            .is_ok()
+        {
             resp_rx.await.unwrap_or_default()
         } else {
             Vec::new()
@@ -314,10 +349,15 @@ impl StateManager {
 
     pub async fn get_history_len(&self, context_key: &str) -> usize {
         let (resp_tx, resp_rx) = oneshot::channel();
-        if self.sender.send(StateCommand::GetHistoryLen {
-            context_key: context_key.to_string(),
-            resp: resp_tx,
-        }).await.is_ok() {
+        if self
+            .sender
+            .send(StateCommand::GetHistoryLen {
+                context_key: context_key.to_string(),
+                resp: resp_tx,
+            })
+            .await
+            .is_ok()
+        {
             resp_rx.await.unwrap_or(0)
         } else {
             0
@@ -325,24 +365,35 @@ impl StateManager {
     }
 
     pub async fn clear_history(&self, context_key: &str) {
-        let _ = self.sender.send(StateCommand::ClearHistory {
-            context_key: context_key.to_string(),
-        }).await;
+        let _ = self
+            .sender
+            .send(StateCommand::ClearHistory {
+                context_key: context_key.to_string(),
+            })
+            .await;
     }
 
     pub async fn prune_history(&self, context_key: &str, num_messages: usize) {
-        let _ = self.sender.send(StateCommand::PruneHistory {
-            context_key: context_key.to_string(),
-            num_messages,
-        }).await;
+        let _ = self
+            .sender
+            .send(StateCommand::PruneHistory {
+                context_key: context_key.to_string(),
+                num_messages,
+            })
+            .await;
     }
 
     pub async fn get_last_user_prompt(&self, context_key: &str) -> Option<String> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        if self.sender.send(StateCommand::GetLastUserPrompt {
-            context_key: context_key.to_string(),
-            resp: resp_tx,
-        }).await.is_ok() {
+        if self
+            .sender
+            .send(StateCommand::GetLastUserPrompt {
+                context_key: context_key.to_string(),
+                resp: resp_tx,
+            })
+            .await
+            .is_ok()
+        {
             resp_rx.await.unwrap_or(None)
         } else {
             None
@@ -350,32 +401,52 @@ impl StateManager {
     }
 
     // --- Sequencer Management ---
-    pub async fn get_sequencer_tx(&self, context_key: &str) -> Option<mpsc::UnboundedSender<(DestinationInfo, ContextRequest)>> {
+    pub async fn get_sequencer_tx(
+        &self,
+        context_key: &str,
+    ) -> Option<mpsc::UnboundedSender<(DestinationInfo, ContextRequest)>> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        if self.sender.send(StateCommand::GetSequencerTx {
-            context_key: context_key.to_string(),
-            resp: resp_tx,
-        }).await.is_ok() {
+        if self
+            .sender
+            .send(StateCommand::GetSequencerTx {
+                context_key: context_key.to_string(),
+                resp: resp_tx,
+            })
+            .await
+            .is_ok()
+        {
             resp_rx.await.unwrap_or(None)
         } else {
             None
         }
     }
 
-    pub async fn insert_sequencer_tx(&self, context_key: &str, tx: mpsc::UnboundedSender<(DestinationInfo, ContextRequest)>) {
-        let _ = self.sender.send(StateCommand::InsertSequencerTx {
-            context_key: context_key.to_string(),
-            tx,
-        }).await;
+    pub async fn insert_sequencer_tx(
+        &self,
+        context_key: &str,
+        tx: mpsc::UnboundedSender<(DestinationInfo, ContextRequest)>,
+    ) {
+        let _ = self
+            .sender
+            .send(StateCommand::InsertSequencerTx {
+                context_key: context_key.to_string(),
+                tx,
+            })
+            .await;
     }
 
     // --- Model Preference Management ---
     pub async fn get_model_preference(&self, context_key: &str) -> Option<String> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        if self.sender.send(StateCommand::GetModelPreference {
-            context_key: context_key.to_string(),
-            resp: resp_tx,
-        }).await.is_ok() {
+        if self
+            .sender
+            .send(StateCommand::GetModelPreference {
+                context_key: context_key.to_string(),
+                resp: resp_tx,
+            })
+            .await
+            .is_ok()
+        {
             resp_rx.await.unwrap_or(None)
         } else {
             None
@@ -383,33 +454,47 @@ impl StateManager {
     }
 
     pub async fn set_model_preference(&self, context_key: &str, model: &str) {
-        let _ = self.sender.send(StateCommand::SetModelPreference {
-            context_key: context_key.to_string(),
-            model: model.to_string(),
-        }).await;
+        let _ = self
+            .sender
+            .send(StateCommand::SetModelPreference {
+                context_key: context_key.to_string(),
+                model: model.to_string(),
+            })
+            .await;
     }
 
     pub async fn remove_model_preference(&self, context_key: &str) {
-        let _ = self.sender.send(StateCommand::RemoveModelPreference {
-            context_key: context_key.to_string(),
-        }).await;
+        let _ = self
+            .sender
+            .send(StateCommand::RemoveModelPreference {
+                context_key: context_key.to_string(),
+            })
+            .await;
     }
 
     // --- Sent Messages Management ---
     pub async fn insert_sent_message(&self, timestamp: u64, prompt: String, response: String) {
-        let _ = self.sender.send(StateCommand::InsertSentMessage {
-            timestamp,
-            prompt,
-            response,
-        }).await;
+        let _ = self
+            .sender
+            .send(StateCommand::InsertSentMessage {
+                timestamp,
+                prompt,
+                response,
+            })
+            .await;
     }
 
     pub async fn get_sent_message(&self, timestamp: u64) -> Option<(String, String)> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        if self.sender.send(StateCommand::GetSentMessage {
-            timestamp,
-            resp: resp_tx,
-        }).await.is_ok() {
+        if self
+            .sender
+            .send(StateCommand::GetSentMessage {
+                timestamp,
+                resp: resp_tx,
+            })
+            .await
+            .is_ok()
+        {
             resp_rx.await.unwrap_or(None)
         } else {
             None

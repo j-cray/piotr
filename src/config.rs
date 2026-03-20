@@ -1,5 +1,5 @@
-use serde::Deserialize;
 use anyhow::Result;
+use serde::Deserialize;
 
 pub const DEFAULT_CHAT_TEMPERATURE: f32 = 0.5;
 pub const DEFAULT_CHAT_MAX_OUTPUT_TOKENS: i32 = 8192;
@@ -27,14 +27,14 @@ pub struct AppConfig {
     pub bot: BotConfig,
 }
 
+use regex::Regex;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use regex::Regex;
 
 impl AppConfig {
     pub fn load() -> Result<Self> {
         let local_config = Path::new("config.json5");
-        
+
         use etcetera::base_strategy::{BaseStrategy, choose_base_strategy};
 
         let strategy = choose_base_strategy()
@@ -48,18 +48,27 @@ impl AppConfig {
         } else {
             // Neither exists. Scaffold the default configuration on first boot.
             if let Some(parent) = fallback_config.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| anyhow::anyhow!("Failed to create config directory {:?}: {}", parent, e))?;
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    anyhow::anyhow!("Failed to create config directory {:?}: {}", parent, e)
+                })?;
             }
-            
+
             let default_config_content = include_str!("../config.example.json5");
-            std::fs::write(&fallback_config, default_config_content)
-                .map_err(|e| anyhow::anyhow!("Failed to write default config to {:?}: {}", fallback_config, e))?;
-            
-            println!("No configuration found. A default configuration template has been generated at {:?}", fallback_config);
+            std::fs::write(&fallback_config, default_config_content).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to write default config to {:?}: {}",
+                    fallback_config,
+                    e
+                )
+            })?;
+
+            println!(
+                "No configuration found. A default configuration template has been generated at {:?}",
+                fallback_config
+            );
             fallback_config
         };
-        
+
         Self::load_from(&config_path)
     }
 
@@ -77,7 +86,7 @@ impl AppConfig {
         let config = config::Config::builder()
             .add_source(config::File::from_str(
                 &serde_json::to_string(&raw_value)?,
-                config::FileFormat::Json
+                config::FileFormat::Json,
             ))
             // 8. Apply runtime overrides
             .add_source(config::Environment::with_prefix("PIOTR").separator("__"))
@@ -88,10 +97,14 @@ impl AppConfig {
         #[cfg(not(debug_assertions))]
         {
             if app_config.security.profile_encryption_key.is_empty() {
-                anyhow::bail!("SECURITY ERROR: profileEncryptionKey is empty in a release build! This would cause profiles to be weakly encrypted.");
+                anyhow::bail!(
+                    "SECURITY ERROR: profileEncryptionKey is empty in a release build! This would cause profiles to be weakly encrypted."
+                );
             }
             if app_config.security.anonymize_key.is_empty() {
-                anyhow::bail!("SECURITY ERROR: anonymizeKey is empty in a release build! This would cause log anonymization to fail or be weakly encrypted.");
+                anyhow::bail!(
+                    "SECURITY ERROR: anonymizeKey is empty in a release build! This would cause log anonymization to fail or be weakly encrypted."
+                );
             }
         }
 
@@ -100,16 +113,23 @@ impl AppConfig {
 
     fn load_and_resolve_includes(path: &Path, depth: usize) -> Result<Value> {
         if depth > 10 {
-            anyhow::bail!("Circular Include Error or Max Depth (10) Exceeded at path {:?}", path);
+            anyhow::bail!(
+                "Circular Include Error or Max Depth (10) Exceeded at path {:?}",
+                path
+            );
         }
 
         let content = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("Failed to read config file {:?}: {}", path, e))?;
-        
+
         let mut value: Value = json5::from_str(&content)
             .map_err(|e| anyhow::anyhow!("Failed to parse config file {:?}: {}", path, e))?;
 
-        Self::resolve_includes_recursive(&mut value, path.parent().unwrap_or(Path::new("")), depth)?;
+        Self::resolve_includes_recursive(
+            &mut value,
+            path.parent().unwrap_or(Path::new("")),
+            depth,
+        )?;
         Ok(value)
     }
 
@@ -146,14 +166,17 @@ impl AppConfig {
                         // Otherwise merge included content WITH siblings (siblings override include)
                         // It must be an object
                         let mut final_merged = merged_include;
-                        
+
                         // Recursive resolve siblings first
                         for (_, v) in map.iter_mut() {
                             Self::resolve_includes_recursive(v, base_dir, depth)?;
                         }
 
                         // Siblings override includes
-                        json_value_merge::Merge::merge(&mut final_merged, &Value::Object(map.clone()));
+                        json_value_merge::Merge::merge(
+                            &mut final_merged,
+                            &Value::Object(map.clone()),
+                        );
                         *value = final_merged;
                     }
                 } else {
@@ -207,22 +230,29 @@ impl AppConfig {
         Ok(injected_env)
     }
 
-    fn substitute_env_vars(value: &mut Value, injected_env: &std::collections::HashMap<String, String>) -> Result<()> {
+    fn substitute_env_vars(
+        value: &mut Value,
+        injected_env: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
         // Matches $${VAR} as escape or ${VAR} as variable
         let re = Regex::new(r"(?P<escape>\$\$)\{(?P<evar>[A-Z_][A-Z0-9_]*)\}|\$(?P<unescaped>\$)?\{(?P<var>[A-Z_][A-Z0-9_]*)\}").unwrap();
         Self::substitute_recursive(value, &re, injected_env)
     }
 
-    fn substitute_recursive(value: &mut Value, re: &Regex, injected_env: &std::collections::HashMap<String, String>) -> Result<()> {
+    fn substitute_recursive(
+        value: &mut Value,
+        re: &Regex,
+        injected_env: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
         match value {
             Value::String(s) => {
                 let mut new_string = String::new();
                 let mut last_end = 0;
-                
+
                 for cap in re.captures_iter(s.as_str()) {
                     let m = cap.get(0).unwrap();
                     new_string.push_str(&s[last_end..m.start()]);
-                    
+
                     if cap.name("escape").is_some() || cap.name("unescaped").is_some() {
                         // $${VAR} -> ${VAR}
                         // m.start() points to the first $. We skip it by starting at m.start() + 1
@@ -448,8 +478,10 @@ mod tests {
             .build()
             .expect("Failed to build config from string");
 
-        let app_config: AppConfig = config.try_deserialize().expect("Failed to deserialize AppConfig");
-        
+        let app_config: AppConfig = config
+            .try_deserialize()
+            .expect("Failed to deserialize AppConfig");
+
         assert_eq!(app_config.database.url, "sqlite://test.db");
         assert_eq!(app_config.security.anonymize_key, "def");
         assert_eq!(app_config.ai.gcp_project_id, "test-proj");
@@ -458,7 +490,10 @@ mod tests {
         assert_eq!(app_config.ai.models.chat.max_output_tokens.unwrap(), 100);
         assert_eq!(app_config.ai.models.chat.max_input_tokens.unwrap(), 1000);
         assert_eq!(app_config.signal.data_path, "/tmp/signal");
-        assert_eq!(app_config.signal.phone_number.as_deref(), Some("+1234567890"));
+        assert_eq!(
+            app_config.signal.phone_number.as_deref(),
+            Some("+1234567890")
+        );
         assert_eq!(app_config.performance.api_cooldown_ms, 500);
         assert_eq!(app_config.performance.max_concurrent_requests, 5);
         assert_eq!(app_config.performance.message_processing_timeout_secs, 10);
@@ -475,17 +510,32 @@ mod tests {
         write!(base_file, r#"{{ bot: {{ name: "BaseBot", location: "BaseLoc" }}, performance: {{ maxConcurrentRequests: 1 }} }}"#).unwrap();
 
         let mut root_file = File::create(&root_path).unwrap();
-        write!(root_file, r#"{{ $include: "./base.json5", bot: {{ location: "RootLoc" }} }}"#).unwrap();
+        write!(
+            root_file,
+            r#"{{ $include: "./base.json5", bot: {{ location: "RootLoc" }} }}"#
+        )
+        .unwrap();
 
-        let val = AppConfig::load_and_resolve_includes(&root_path, 0).expect("Failed to load and resolve includes");
-        
+        let val = AppConfig::load_and_resolve_includes(&root_path, 0)
+            .expect("Failed to load and resolve includes");
+
         // Root location should override Base location, but name and performance should be preserved
         let bot_obj = val.get("bot").unwrap().as_object().unwrap();
         assert_eq!(bot_obj.get("name").unwrap().as_str().unwrap(), "BaseBot");
-        assert_eq!(bot_obj.get("location").unwrap().as_str().unwrap(), "RootLoc");
+        assert_eq!(
+            bot_obj.get("location").unwrap().as_str().unwrap(),
+            "RootLoc"
+        );
 
         let perf_obj = val.get("performance").unwrap().as_object().unwrap();
-        assert_eq!(perf_obj.get("maxConcurrentRequests").unwrap().as_u64().unwrap(), 1);
+        assert_eq!(
+            perf_obj
+                .get("maxConcurrentRequests")
+                .unwrap()
+                .as_u64()
+                .unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -494,7 +544,9 @@ mod tests {
         let config_path = dir.path().join("env_config.json5");
 
         let mut file = File::create(&config_path).unwrap();
-        write!(file, r#"{{
+        write!(
+            file,
+            r#"{{
             env: {{
                 vars: {{
                     TEST_SUBST_VAR: "Hello injected var"
@@ -505,16 +557,24 @@ mod tests {
                 name: "${{TEST_SUBST_VAR}}",
                 systemPrompt: "Look at $${{ESCAPED_VAR}}"
             }}
-        }}"#).unwrap();
+        }}"#
+        )
+        .unwrap();
 
         let mut val = AppConfig::load_and_resolve_includes(&config_path, 0).unwrap();
-        
+
         // Apply injection
         let injected_env = AppConfig::apply_env_injection(&mut val).unwrap();
-        
+
         // Assert env vars are collected
-        assert_eq!(injected_env.get("TEST_SUBST_VAR").unwrap(), "Hello injected var");
-        assert_eq!(injected_env.get("ROOT_ENV_VAR").unwrap(), "Root level injection");
+        assert_eq!(
+            injected_env.get("TEST_SUBST_VAR").unwrap(),
+            "Hello injected var"
+        );
+        assert_eq!(
+            injected_env.get("ROOT_ENV_VAR").unwrap(),
+            "Root level injection"
+        );
 
         // Assert they are removed from the JSON tree
         let env_obj = val.get("env").unwrap().as_object().unwrap();
@@ -523,9 +583,25 @@ mod tests {
 
         // Process substitutions
         AppConfig::substitute_env_vars(&mut val, &injected_env).unwrap();
-        
-        let bot_name = val.get("bot").unwrap().as_object().unwrap().get("name").unwrap().as_str().unwrap();
-        let bot_persona = val.get("bot").unwrap().as_object().unwrap().get("systemPrompt").unwrap().as_str().unwrap();
+
+        let bot_name = val
+            .get("bot")
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .get("name")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        let bot_persona = val
+            .get("bot")
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .get("systemPrompt")
+            .unwrap()
+            .as_str()
+            .unwrap();
 
         assert_eq!(bot_name, "Hello injected var");
         // Ensure escaping works
@@ -546,13 +622,37 @@ mod tests {
         write!(f2, r#"{{ bot: {{ location: "ArrayBot" }} }}"#).unwrap();
 
         let mut f_root = File::create(&root).unwrap();
-        write!(f_root, r#"{{ $include: ["./common1.json5", "./common2.json5"] }}"#).unwrap();
+        write!(
+            f_root,
+            r#"{{ $include: ["./common1.json5", "./common2.json5"] }}"#
+        )
+        .unwrap();
 
         let val = AppConfig::load_and_resolve_includes(&root, 0).unwrap();
-        
+
         // Assert array includes merged correctly
-        assert_eq!(val.get("ai").unwrap().as_object().unwrap().get("gcpLocation").unwrap().as_str().unwrap(), "europe-west4");
-        assert_eq!(val.get("bot").unwrap().as_object().unwrap().get("location").unwrap().as_str().unwrap(), "ArrayBot");
+        assert_eq!(
+            val.get("ai")
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .get("gcpLocation")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "europe-west4"
+        );
+        assert_eq!(
+            val.get("bot")
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .get("location")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "ArrayBot"
+        );
 
         // Test max depth
         let mut loop_file = File::create(dir.path().join("loop.json5")).unwrap();
@@ -571,6 +671,10 @@ mod tests {
 
         let res = AppConfig::substitute_env_vars(&mut val, &injected_env);
         assert!(res.is_err());
-        assert!(res.unwrap_err().to_string().contains("MissingEnvVarError: MISSING_DB_URL_12345"));
+        assert!(
+            res.unwrap_err()
+                .to_string()
+                .contains("MissingEnvVarError: MISSING_DB_URL_12345")
+        );
     }
 }
