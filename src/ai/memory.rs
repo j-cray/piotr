@@ -1,16 +1,15 @@
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use std::fs;
-use anyhow::{Result, Context};
 use crate::ai::ReactionAnalysis;
-use sqlx::SqlitePool;
+use anyhow::{Context, Result};
 use chacha20poly1305::{
+    XChaCha20Poly1305, XNonce,
     aead::{Aead, KeyInit},
-    XChaCha20Poly1305, XNonce
 };
 use rand::Rng;
-
+use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
+use std::fs;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Interaction {
@@ -40,18 +39,30 @@ impl Memory {
         }
     }
 
-    pub async fn add_interaction(&self, prompt: String, response: String, analysis: ReactionAnalysis) -> Result<()> {
+    pub async fn add_interaction(
+        &self,
+        prompt: String,
+        response: String,
+        analysis: ReactionAnalysis,
+    ) -> Result<()> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis() as u64;
+
         let mut guard = self.interactions.lock().await;
 
-        if let Some(existing) = guard.iter_mut().find(|i| i.prompt == prompt && i.response == response) {
+        if let Some(existing) = guard
+            .iter_mut()
+            .find(|i| i.prompt == prompt && i.response == response)
+        {
             existing.analysis = analysis;
-            existing.timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as u64;
+            existing.timestamp = timestamp;
         } else {
             guard.push(Interaction {
                 prompt,
                 response,
                 analysis,
-                timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as u64,
+                timestamp,
             });
         }
 
@@ -63,7 +74,12 @@ impl Memory {
         let guard = self.interactions.lock().await;
         // For now, just return the highest rated recent ones
         let mut sorted: Vec<Interaction> = guard.clone();
-        sorted.sort_by(|a, b| b.analysis.sentiment_score.partial_cmp(&a.analysis.sentiment_score).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(|a, b| {
+            b.analysis
+                .sentiment_score
+                .partial_cmp(&a.analysis.sentiment_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         sorted.into_iter().take(limit).collect()
     }
 
@@ -104,7 +120,8 @@ pub struct DbProfileManager {
 
 impl DbProfileManager {
     pub fn new(pool: SqlitePool, key_hex: &str) -> Result<Self> {
-        let key_bytes = hex::decode(key_hex).context("Failed to decode PROFILE_ENCRYPTION_KEY hex")?;
+        let key_bytes =
+            hex::decode(key_hex).context("Failed to decode PROFILE_ENCRYPTION_KEY hex")?;
         if key_bytes.len() != 32 {
             anyhow::bail!("PROFILE_ENCRYPTION_KEY must be 32 bytes (64 hex chars)");
         }
@@ -118,7 +135,7 @@ impl DbProfileManager {
     }
 
     pub fn get_profile_id(raw_id: &str) -> String {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(raw_id.as_bytes());
         hex::encode(hasher.finalize())
@@ -130,7 +147,8 @@ impl DbProfileManager {
         rand::rng().fill_bytes(&mut nonce_bytes);
         let nonce = XNonce::from_slice(&nonce_bytes);
 
-        let ciphertext = cipher.encrypt(nonce, data)
+        let ciphertext = cipher
+            .encrypt(nonce, data)
             .map_err(|e| anyhow::anyhow!("Encryption failure: {:?}", e))?;
 
         // Prepend nonce to ciphertext
@@ -148,20 +166,26 @@ impl DbProfileManager {
         let nonce = XNonce::from_slice(nonce_bytes);
 
         let cipher = XChaCha20Poly1305::new(&self.encryption_key.into());
-        let plaintext = cipher.decrypt(nonce, ciphertext)
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext)
             .map_err(|e| anyhow::anyhow!("Decryption failure: {:?}", e))?;
 
         Ok(plaintext)
     }
 
-    pub async fn get_profile(&self, raw_id: &str, current_name: Option<String>) -> Result<UserProfile> {
+    pub async fn get_profile(
+        &self,
+        raw_id: &str,
+        current_name: Option<String>,
+    ) -> Result<UserProfile> {
         let id = Self::get_profile_id(raw_id);
 
         // Fetch from DB
-        let row: Option<(Vec<u8>,)> = sqlx::query_as("SELECT encrypted_blob FROM user_profiles WHERE user_id = ?")
-            .bind(&id)
-            .fetch_optional(&self.pool)
-            .await?;
+        let row: Option<(Vec<u8>,)> =
+            sqlx::query_as("SELECT encrypted_blob FROM user_profiles WHERE user_id = ?")
+                .bind(&id)
+                .fetch_optional(&self.pool)
+                .await?;
 
         let mut profile = if let Some((blob,)) = row {
             // Decrypt
@@ -194,7 +218,9 @@ impl DbProfileManager {
     pub async fn save_profile(&self, profile: &UserProfile) -> Result<()> {
         let json = serde_json::to_vec(profile)?;
         let blob = self.encrypt(&json)?;
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs() as i64;
 
         sqlx::query(
             "INSERT INTO user_profiles (user_id, encrypted_blob, last_updated) VALUES (?, ?, ?)
@@ -209,13 +235,18 @@ impl DbProfileManager {
         Ok(())
     }
 
-    pub async fn get_group_profile(&self, raw_id: &str, current_name: Option<String>) -> Result<GroupProfile> {
+    pub async fn get_group_profile(
+        &self,
+        raw_id: &str,
+        current_name: Option<String>,
+    ) -> Result<GroupProfile> {
         let id = Self::get_profile_id(raw_id);
 
-        let row: Option<(Vec<u8>,)> = sqlx::query_as("SELECT encrypted_blob FROM group_profiles WHERE group_id = ?")
-            .bind(&id)
-            .fetch_optional(&self.pool)
-            .await?;
+        let row: Option<(Vec<u8>,)> =
+            sqlx::query_as("SELECT encrypted_blob FROM group_profiles WHERE group_id = ?")
+                .bind(&id)
+                .fetch_optional(&self.pool)
+                .await?;
 
         let mut profile = if let Some((blob,)) = row {
             let plaintext = self.decrypt(&blob)?;
@@ -245,7 +276,9 @@ impl DbProfileManager {
     pub async fn save_group_profile(&self, profile: &GroupProfile) -> Result<()> {
         let json = serde_json::to_vec(profile)?;
         let blob = self.encrypt(&json)?;
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs() as i64;
 
         sqlx::query(
             "INSERT INTO group_profiles (group_id, encrypted_blob, last_updated) VALUES (?, ?, ?)
@@ -271,7 +304,11 @@ impl DbProfileManager {
                         Ok(profile) => {
                             tracing::info!("Migrating profile for {}", profile.id);
                             if let Err(e) = self.save_profile(&profile).await {
-                                tracing::error!("Failed to migrate profile {}: {:?}", profile.id, e);
+                                tracing::error!(
+                                    "Failed to migrate profile {}: {:?}",
+                                    profile.id,
+                                    e
+                                );
                             } else {
                                 // Rename to .imported
                                 let new_path = path.with_extension("json.imported");
@@ -346,7 +383,12 @@ mod tests {
         let interactions = vec![i1, i2, i3];
         let mut sorted = interactions.clone();
 
-        sorted.sort_by(|a, b| b.analysis.sentiment_score.partial_cmp(&a.analysis.sentiment_score).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(|a, b| {
+            b.analysis
+                .sentiment_score
+                .partial_cmp(&a.analysis.sentiment_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         assert_eq!(sorted[0].prompt, "2"); // 0.9
         assert_eq!(sorted[1].prompt, "1"); // 0.1
@@ -361,7 +403,9 @@ mod tests {
         // Note: any test making actual DB calls through this pool will fail at runtime
         // rather than at setup. Given none of the encryption tests use the pool, this is acceptable.
         DbProfileManager {
-            pool: sqlx::sqlite::SqlitePoolOptions::new().connect_lazy("sqlite::memory:").unwrap(),
+            pool: sqlx::sqlite::SqlitePoolOptions::new()
+                .connect_lazy("sqlite::memory:")
+                .unwrap(),
             encryption_key: [1u8; 32],
         }
     }
@@ -375,7 +419,10 @@ mod tests {
         let run2 = manager.encrypt(data).unwrap();
 
         // Security: Nonce should ensure identical plaintext produces different ciphertext
-        assert_ne!(run1, run2, "Encryption lacks entropy; same plaintext produced same ciphertext");
+        assert_ne!(
+            run1, run2,
+            "Encryption lacks entropy; same plaintext produced same ciphertext"
+        );
 
         // Decryption should still succeed for both
         assert_eq!(manager.decrypt(&run1).unwrap(), data);
@@ -387,7 +434,10 @@ mod tests {
         let manager = get_test_manager();
         let short_blob = vec![1u8; 23];
         let result = manager.decrypt(&short_blob);
-        assert!(result.is_err(), "Decryption should fail on blobs smaller than nonce size");
+        assert!(
+            result.is_err(),
+            "Decryption should fail on blobs smaller than nonce size"
+        );
     }
 
     #[tokio::test]
@@ -400,7 +450,10 @@ mod tests {
         encrypted[25] ^= 0x01;
 
         let result = manager.decrypt(&encrypted);
-        assert!(result.is_err(), "Decryption should mathematically fail on tampered ciphertext");
+        assert!(
+            result.is_err(),
+            "Decryption should mathematically fail on tampered ciphertext"
+        );
     }
 
     #[tokio::test]
@@ -446,10 +499,22 @@ mod tests {
         let loaded = manager.get_profile(raw_id, None).await.unwrap();
 
         assert_eq!(loaded.id, profile.id, "loaded profile ID does not match");
-        assert_eq!(loaded.name, profile.name, "loaded profile name does not match");
-        assert_eq!(loaded.personality_summary, profile.personality_summary, "loaded profile personality does not match");
-        assert_eq!(loaded.interaction_style, profile.interaction_style, "loaded profile style does not match");
-        assert_eq!(loaded.topics_of_interest, profile.topics_of_interest, "loaded profile topics do not match");
+        assert_eq!(
+            loaded.name, profile.name,
+            "loaded profile name does not match"
+        );
+        assert_eq!(
+            loaded.personality_summary, profile.personality_summary,
+            "loaded profile personality does not match"
+        );
+        assert_eq!(
+            loaded.interaction_style, profile.interaction_style,
+            "loaded profile style does not match"
+        );
+        assert_eq!(
+            loaded.topics_of_interest, profile.topics_of_interest,
+            "loaded profile topics do not match"
+        );
     }
 
     #[tokio::test]

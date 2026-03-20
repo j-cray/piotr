@@ -1,9 +1,9 @@
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions, SqliteConnectOptions};
 use anyhow::Result;
-use tracing::info;
-use std::str::FromStr;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::fs;
 use std::path::Path;
+use std::str::FromStr;
+use tracing::info;
 
 pub struct Database {
     pub pool: SqlitePool,
@@ -41,9 +41,7 @@ impl Database {
 
     pub async fn run_migrations(&self) -> Result<()> {
         info!("Running database migrations...");
-        sqlx::migrate!("./migrations")
-            .run(&self.pool)
-            .await?;
+        sqlx::migrate!("./migrations").run(&self.pool).await?;
         info!("Migrations completed.");
         Ok(())
     }
@@ -62,7 +60,11 @@ mod tests {
 
         // With an in-memory database, we can and should test the migrations.
         let migration_result = db.run_migrations().await;
-        assert!(migration_result.is_ok(), "Failed to run migrations: {:?}", migration_result.err());
+        assert!(
+            migration_result.is_ok(),
+            "Failed to run migrations: {:?}",
+            migration_result.err()
+        );
 
         assert!(!db.pool.is_closed(), "Database pool should not be closed");
     }
@@ -72,6 +74,9 @@ mod tests {
         let invalid_url = "not_a_sqlite_url://localhost/mydb";
         let result = Database::new(invalid_url).await;
 
-        assert!(result.is_err(), "Expected an error for malformed URL scheme");
+        assert!(
+            result.is_err(),
+            "Expected an error for malformed URL scheme"
+        );
     }
 }
