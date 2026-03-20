@@ -1,6 +1,6 @@
 use rand::RngExt;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn}; // For random_bool
+use tracing::{error, info, warn};
 
 use crate::ai::{
     Content, Part, VertexClient,
