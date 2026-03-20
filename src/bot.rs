@@ -550,12 +550,8 @@ impl SessionManager {
                         let typing_source = reply_source.clone();
                         let typing_group_id = reply_group_id.clone();
                         let typing_task = tokio::spawn(async move {
-                            let _ = typing_client
-                                .send_typing(&typing_source, typing_group_id.as_deref())
-                                .await;
                             let mut interval =
                                 tokio::time::interval(tokio::time::Duration::from_secs(10));
-                            interval.tick().await; // Consume immediate first tick
                             loop {
                                 interval.tick().await;
                                 let _ = typing_client
