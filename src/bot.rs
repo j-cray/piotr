@@ -534,7 +534,7 @@ impl SessionManager {
                         }
                     }
 
-                    let mut response_opt = None;
+                    let response_opt;
 
                     if !should_abort_generation {
                         // Send Read Receipt

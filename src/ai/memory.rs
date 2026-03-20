@@ -45,6 +45,10 @@ impl Memory {
         response: String,
         analysis: ReactionAnalysis,
     ) -> Result<()> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis() as u64;
+
         let mut guard = self.interactions.lock().await;
 
         if let Some(existing) = guard
@@ -52,17 +56,13 @@ impl Memory {
             .find(|i| i.prompt == prompt && i.response == response)
         {
             existing.analysis = analysis;
-            existing.timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_millis() as u64;
+            existing.timestamp = timestamp;
         } else {
             guard.push(Interaction {
                 prompt,
                 response,
                 analysis,
-                timestamp: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)?
-                    .as_millis() as u64,
+                timestamp,
             });
         }
 
