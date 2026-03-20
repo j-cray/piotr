@@ -173,6 +173,26 @@ impl SignalClient {
             let mut current_stdin: Option<tokio::process::ChildStdin> = None;
             let mut reader: Option<tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>> = None;
 
+            async fn reset_process(
+                current_child: &mut Option<tokio::process::Child>,
+                current_stdin: &mut Option<tokio::process::ChildStdin>,
+                reader: &mut Option<tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>>,
+                pending_requests: &Arc<std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<Result<()>>>>>,
+                error_message: &'static str,
+            ) {
+                if let Some(mut child) = current_child.take() {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                }
+                *current_stdin = None;
+                *reader = None;
+
+                let mut map = pending_requests.lock().unwrap();
+                for (_, tx) in map.drain() {
+                    let _ = tx.send(Err(anyhow::anyhow!("{}", error_message)));
+                }
+            }
+
             loop {
                 if current_child.is_none() {
                     if !is_first_spawn {
@@ -239,17 +259,13 @@ impl SignalClient {
                                                stdin.write_all(b"\n").await.is_err() ||
                                                stdin.flush().await.is_err() {
                                                 error!("Failed to write to signal-cli stdin. Triggering restart.");
-                                                if let Some(mut child) = current_child.take() {
-                                                    let _ = child.kill().await;
-                                                    let _ = child.wait().await;
-                                                }
-                                                current_stdin = None;
-                                                reader = None;
-                                                
-                                                let mut map = pending_requests_clone.lock().unwrap();
-                                                for (_, tx) in map.drain() {
-                                                    let _ = tx.send(Err(anyhow::anyhow!("Signal-cli stdin write failed, process restarting")));
-                                                }
+                                                reset_process(
+                                                    &mut current_child,
+                                                    &mut current_stdin,
+                                                    &mut reader,
+                                                    &pending_requests_clone,
+                                                    "Signal-cli stdin write failed, process restarting",
+                                                ).await;
                                             }
                                         }
                                         Err(e) => {
@@ -333,17 +349,13 @@ impl SignalClient {
                             },
                             Ok(None) | Err(_) => {
                                 error!("Signal-cli stdout closed unexpectedly. Restarting process...");
-                                if let Some(mut child) = current_child.take() {
-                                    let _ = child.kill().await;
-                                    let _ = child.wait().await;
-                                }
-                                current_stdin = None;
-                                reader = None;
-                                
-                                let mut map = pending_requests_clone.lock().unwrap();
-                                for (_, tx) in map.drain() {
-                                    let _ = tx.send(Err(anyhow::anyhow!("Signal-cli process restarted before command could complete")));
-                                }
+                                reset_process(
+                                    &mut current_child,
+                                    &mut current_stdin,
+                                    &mut reader,
+                                    &pending_requests_clone,
+                                    "Signal-cli process restarted before command could complete",
+                                ).await;
                             }
                         }
                     }
