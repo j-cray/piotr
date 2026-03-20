@@ -163,6 +163,8 @@ impl SignalClient {
         let data_path_clone = data_path.to_string();
 
         tokio::spawn(async move {
+            const RESTART_DELAY_SECS: u64 = 5;
+
             let mut current_child: Option<tokio::process::Child> = None;
             let mut current_stdin: Option<tokio::process::ChildStdin> = None;
             let mut reader: Option<tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>> = None;
@@ -181,14 +183,34 @@ impl SignalClient {
                         .spawn() {
                             Ok(c) => c,
                             Err(e) => {
-                                error!("Failed to spawn signal-cli: {}. Retrying in 5s...", e);
-                                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                                error!("Failed to spawn signal-cli: {}. Retrying in {}s...", e, RESTART_DELAY_SECS);
+                                tokio::time::sleep(std::time::Duration::from_secs(RESTART_DELAY_SECS)).await;
                                 continue;
                             }
                         };
                     
-                    current_stdin = Some(child.stdin.take().unwrap());
-                    reader = Some(BufReader::new(child.stdout.take().unwrap()).lines());
+                    let stdin = match child.stdin.take() {
+                        Some(s) => s,
+                        None => {
+                            error!("signal-cli spawned without stdin handle (process may have failed to configure stdio). Retrying in {}s...", RESTART_DELAY_SECS);
+                            let _ = child.kill().await;
+                            let _ = child.wait().await;
+                            tokio::time::sleep(std::time::Duration::from_secs(RESTART_DELAY_SECS)).await;
+                            continue;
+                        }
+                    };
+                    let stdout = match child.stdout.take() {
+                        Some(s) => s,
+                        None => {
+                            error!("signal-cli spawned without stdout handle (process may have failed to configure stdio). Retrying in {}s...", RESTART_DELAY_SECS);
+                            let _ = child.kill().await;
+                            let _ = child.wait().await;
+                            tokio::time::sleep(std::time::Duration::from_secs(RESTART_DELAY_SECS)).await;
+                            continue;
+                        }
+                    };
+                    current_stdin = Some(stdin);
+                    reader = Some(BufReader::new(stdout).lines());
                     current_child = Some(child);
                     info!("signal-cli process spawned successfully");
                 }
@@ -206,6 +228,7 @@ impl SignalClient {
                                             error!("Failed to write to signal-cli stdin. Triggering restart.");
                                             if let Some(mut child) = current_child.take() {
                                                 let _ = child.kill().await;
+                                                let _ = child.wait().await;
                                             }
                                             current_stdin = None;
                                             reader = None;
@@ -222,6 +245,7 @@ impl SignalClient {
                                 info!("Signal supervisor rx_in dropped. Exiting gracefully.");
                                 if let Some(mut child) = current_child.take() {
                                     let _ = child.kill().await;
+                                    let _ = child.wait().await;
                                 }
                                 break;
                             }
@@ -243,6 +267,10 @@ impl SignalClient {
                                      if rpc.method == "receive" {
                                         if let Err(e) = tx_out.send(rpc.params).await {
                                             error!("Receiver dropped: {}", e);
+                                            if let Some(mut child) = current_child.take() {
+                                                let _ = child.kill().await;
+                                                let _ = child.wait().await;
+                                            }
                                             break;
                                         }
                                      }
@@ -273,6 +301,7 @@ impl SignalClient {
                                 error!("Signal-cli stdout closed unexpectedly. Restarting process...");
                                 if let Some(mut child) = current_child.take() {
                                     let _ = child.kill().await;
+                                    let _ = child.wait().await;
                                 }
                                 current_stdin = None;
                                 reader = None;
