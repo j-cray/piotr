@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::process::Stdio;
@@ -163,7 +163,11 @@ impl SignalClient {
         let data_path_clone = data_path.to_string();
 
         tokio::spawn(async move {
-            const RESTART_DELAY_SECS: u64 = 5;
+            const INITIAL_RESTART_DELAY_SECS: u64 = 1;
+            const MAX_RESTART_DELAY_SECS: u64 = 60;
+            let mut restart_delay_secs = INITIAL_RESTART_DELAY_SECS;
+            let mut last_spawn_time = tokio::time::Instant::now();
+            let mut is_first_spawn = true;
 
             let mut current_child: Option<tokio::process::Child> = None;
             let mut current_stdin: Option<tokio::process::ChildStdin> = None;
@@ -171,6 +175,16 @@ impl SignalClient {
 
             loop {
                 if current_child.is_none() {
+                    if !is_first_spawn {
+                        if last_spawn_time.elapsed().as_secs() > 10 {
+                            restart_delay_secs = INITIAL_RESTART_DELAY_SECS;
+                        }
+                        error!("Waiting {}s before restarting signal-cli...", restart_delay_secs);
+                        tokio::time::sleep(std::time::Duration::from_secs(restart_delay_secs)).await;
+                        restart_delay_secs = std::cmp::min(restart_delay_secs * 2, MAX_RESTART_DELAY_SECS);
+                    }
+                    is_first_spawn = false;
+
                     info!("Spawning signal-cli process");
                     let mut child = match Command::new("signal-cli")
                         .arg("--config").arg(&data_path_clone)
@@ -183,8 +197,7 @@ impl SignalClient {
                         .spawn() {
                             Ok(c) => c,
                             Err(e) => {
-                                error!("Failed to spawn signal-cli: {}. Retrying in {}s...", e, RESTART_DELAY_SECS);
-                                tokio::time::sleep(std::time::Duration::from_secs(RESTART_DELAY_SECS)).await;
+                                error!("Failed to spawn signal-cli: {}", e);
                                 continue;
                             }
                         };
@@ -192,26 +205,25 @@ impl SignalClient {
                     let stdin = match child.stdin.take() {
                         Some(s) => s,
                         None => {
-                            error!("signal-cli spawned without stdin handle (process may have failed to configure stdio). Retrying in {}s...", RESTART_DELAY_SECS);
+                            error!("signal-cli spawned without stdin handle");
                             let _ = child.kill().await;
                             let _ = child.wait().await;
-                            tokio::time::sleep(std::time::Duration::from_secs(RESTART_DELAY_SECS)).await;
                             continue;
                         }
                     };
                     let stdout = match child.stdout.take() {
                         Some(s) => s,
                         None => {
-                            error!("signal-cli spawned without stdout handle (process may have failed to configure stdio). Retrying in {}s...", RESTART_DELAY_SECS);
+                            error!("signal-cli spawned without stdout handle");
                             let _ = child.kill().await;
                             let _ = child.wait().await;
-                            tokio::time::sleep(std::time::Duration::from_secs(RESTART_DELAY_SECS)).await;
                             continue;
                         }
                     };
                     current_stdin = Some(stdin);
                     reader = Some(BufReader::new(stdout).lines());
                     current_child = Some(child);
+                    last_spawn_time = tokio::time::Instant::now();
                     info!("signal-cli process spawned successfully");
                 }
 
@@ -220,22 +232,44 @@ impl SignalClient {
                         match payload_opt {
                             Some(payload) => {
                                 if let Some(stdin) = current_stdin.as_mut() {
-                                    if let Ok(payload_str) = serde_json::to_string(&payload) {
-                                        tracing::debug!("Sending Signal RPC payload: [REDACTED]");
-                                        if stdin.write_all(payload_str.as_bytes()).await.is_err() ||
-                                           stdin.write_all(b"\n").await.is_err() ||
-                                           stdin.flush().await.is_err() {
-                                            error!("Failed to write to signal-cli stdin. Triggering restart.");
-                                            if let Some(mut child) = current_child.take() {
-                                                let _ = child.kill().await;
-                                                let _ = child.wait().await;
+                                    match serde_json::to_string(&payload) {
+                                        Ok(payload_str) => {
+                                            tracing::debug!("Sending Signal RPC payload: [REDACTED]");
+                                            if stdin.write_all(payload_str.as_bytes()).await.is_err() ||
+                                               stdin.write_all(b"\n").await.is_err() ||
+                                               stdin.flush().await.is_err() {
+                                                error!("Failed to write to signal-cli stdin. Triggering restart.");
+                                                if let Some(mut child) = current_child.take() {
+                                                    let _ = child.kill().await;
+                                                    let _ = child.wait().await;
+                                                }
+                                                current_stdin = None;
+                                                reader = None;
+                                                
+                                                let mut map = pending_requests_clone.lock().unwrap();
+                                                for (_, tx) in map.drain() {
+                                                    let _ = tx.send(Err(anyhow::anyhow!("Signal-cli stdin write failed, process restarting")));
+                                                }
                                             }
-                                            current_stdin = None;
-                                            reader = None;
-                                            
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to serialize Signal RPC payload: {}", e);
+                                            if let Some(id_val) = payload.get("id") {
+                                                if let Some(id_str) = id_val.as_str() {
+                                                    let mut map = pending_requests_clone.lock().unwrap();
+                                                    if let Some(tx) = map.remove(id_str) {
+                                                        let _ = tx.send(Err(anyhow::anyhow!("Failed to serialize payload: {}", e)));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    if let Some(id_val) = payload.get("id") {
+                                        if let Some(id_str) = id_val.as_str() {
                                             let mut map = pending_requests_clone.lock().unwrap();
-                                            for (_, tx) in map.drain() {
-                                                let _ = tx.send(Err(anyhow::anyhow!("Signal-cli stdin write failed, process restarting")));
+                                            if let Some(tx) = map.remove(id_str) {
+                                                let _ = tx.send(Err(anyhow::anyhow!("Signal-cli not running, dropped request")));
                                             }
                                         }
                                     }
@@ -352,13 +386,72 @@ impl SignalClient {
             "id": &id_str
         });
 
+        self.send_and_wait(&payload, id_str).await
+    }
+
+    pub async fn send_receipt(&self, recipient: &str, target_timestamp: u64) -> Result<()> {
+        let id_str = self.next_id();
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "method": "sendReceipt",
+            "params": {
+                "recipient": recipient,
+                "targetTimestamp": target_timestamp,
+                "type": "read"
+            },
+            "id": &id_str
+        });
+
+        self.send_and_wait(&payload, id_str).await
+    }
+
+    pub async fn send_typing(&self, recipient: &str, group_id: Option<&str>) -> Result<()> {
+        let params = if let Some(gid) = group_id {
+            json!({ "groupId": gid })
+        } else {
+            json!({ "recipient": [recipient] })
+        };
+
+        let id_str = self.next_id();
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "method": "sendTyping",
+            "params": params,
+            "id": &id_str
+        });
+
+        self.send_and_wait(&payload, id_str).await
+    }
+
+    pub async fn stop_typing(&self, recipient: &str, group_id: Option<&str>) -> Result<()> {
+        let params = if let Some(gid) = group_id {
+            json!({ "groupId": gid, "stop": true })
+        } else {
+            json!({ "recipient": [recipient], "stop": true })
+        };
+
+        let id_str = self.next_id();
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "method": "sendTyping",
+            "params": params,
+            "id": &id_str
+        });
+
+        self.send_and_wait(&payload, id_str).await
+    }
+
+    async fn send_and_wait(&self, payload: &Value, id_str: String) -> Result<()> {
         let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
         {
             let mut map = self.pending_requests.lock().unwrap();
             map.insert(id_str.clone(), resp_tx);
         }
 
-        self.send_payload(&payload).await?;
+        if let Err(e) = self.send_payload(payload).await {
+            self.pending_requests.lock().unwrap().remove(&id_str);
+            return Err(e);
+        }
 
         match tokio::time::timeout(tokio::time::Duration::from_secs(30), resp_rx).await {
             Ok(Ok(Ok(()))) => Ok(()),
@@ -372,55 +465,6 @@ impl SignalClient {
                 Err(anyhow::anyhow!("Signal command timed out after 30s"))
             }
         }
-    }
-
-    pub async fn send_receipt(&self, recipient: &str, target_timestamp: u64) -> Result<()> {
-        let payload = json!({
-            "jsonrpc": "2.0",
-            "method": "sendReceipt",
-            "params": {
-                "recipient": recipient,
-                "targetTimestamp": target_timestamp,
-                "type": "read"
-            },
-            "id": self.next_id()
-        });
-
-        self.send_payload(&payload).await
-    }
-
-    pub async fn send_typing(&self, recipient: &str, group_id: Option<&str>) -> Result<()> {
-        let params = if let Some(gid) = group_id {
-            json!({ "groupId": gid })
-        } else {
-            json!({ "recipient": [recipient] })
-        };
-
-        let payload = json!({
-            "jsonrpc": "2.0",
-            "method": "sendTyping",
-            "params": params,
-            "id": self.next_id()
-        });
-
-        self.send_payload(&payload).await
-    }
-
-    pub async fn stop_typing(&self, recipient: &str, group_id: Option<&str>) -> Result<()> {
-        let params = if let Some(gid) = group_id {
-            json!({ "groupId": gid, "stop": true })
-        } else {
-            json!({ "recipient": [recipient], "stop": true })
-        };
-
-        let payload = json!({
-            "jsonrpc": "2.0",
-            "method": "sendTyping",
-            "params": params,
-            "id": self.next_id()
-        });
-
-        self.send_payload(&payload).await
     }
 
     async fn send_payload(&self, payload: &Value) -> Result<()> {
