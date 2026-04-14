@@ -14,7 +14,7 @@ dotenv = "0.15"
 config = { version = "0.15", features = ["json5"] }
 qr_code = "2.0.0"
 image = "0.25"
-rand = "0.10.0"
+rand = "0.10.1"
 textwrap = "0.16.2"
 base64 = "0.22.1"
 sha2 = "0.10.9"
