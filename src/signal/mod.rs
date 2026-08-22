@@ -35,38 +35,106 @@ struct JsonRpcError {
     data: Option<Value>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct JsonRpcNotification {
+    pub jsonrpc: Option<String>,
     pub method: String,
     pub params: SignalMessage,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct SignalMessage {
+    pub account: Option<String>,
     pub envelope: Option<Envelope>,
     // Add other fields as needed from signal-cli output
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 #[allow(dead_code)]
 pub struct Envelope {
-    pub source: String,
+    pub source: Option<String>,
     #[serde(rename = "sourceNumber")]
     pub source_number: Option<String>,
     #[serde(rename = "sourceUuid")]
     pub source_uuid: Option<String>,
-    pub timestamp: u64,
+    pub timestamp: Option<u64>,
     #[serde(rename = "sourceName")]
     pub source_name: Option<String>,
+    #[serde(rename = "sourceDevice")]
+    pub source_device: Option<u32>,
     #[serde(rename = "dataMessage")]
     pub data_message: Option<DataMessage>,
+    #[serde(rename = "syncMessage")]
+    pub sync_message: Option<SyncMessage>,
+    #[serde(rename = "receiptMessage")]
+    pub receipt_message: Option<ReceiptMessage>,
+    #[serde(rename = "typingMessage")]
+    pub typing_message: Option<Value>,
 }
 
-#[derive(Deserialize, Debug)]
+impl Envelope {
+    pub fn effective_source(&self) -> String {
+        self.source
+            .as_deref()
+            .or(self.source_number.as_deref())
+            .or(self.source_uuid.as_deref())
+            .unwrap_or("unknown")
+            .to_string()
+    }
+
+    pub fn effective_timestamp(&self) -> u64 {
+        self.timestamp
+            .or_else(|| self.data_message.as_ref().and_then(|d| d.timestamp))
+            .or_else(|| {
+                self.sync_message
+                    .as_ref()
+                    .and_then(|s| s.sent_message.as_ref())
+                    .and_then(|d| d.timestamp)
+            })
+            .unwrap_or(0)
+    }
+
+    pub fn effective_data_message(&self) -> Option<&DataMessage> {
+        if self.data_message.is_some() {
+            self.data_message.as_ref()
+        } else if let Some(sync) = &self.sync_message {
+            sync.sent_message.as_ref()
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[allow(dead_code)]
+pub struct SyncMessage {
+    #[serde(rename = "sentMessage")]
+    pub sent_message: Option<DataMessage>,
+    #[serde(rename = "readMessages")]
+    pub read_messages: Option<Vec<Value>>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[allow(dead_code)]
+pub struct ReceiptMessage {
+    pub when: Option<u64>,
+    #[serde(rename = "isDelivery")]
+    pub is_delivery: Option<bool>,
+    #[serde(rename = "isRead")]
+    pub is_read: Option<bool>,
+    pub timestamps: Option<Vec<u64>>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
 #[allow(dead_code)]
 pub struct DataMessage {
     pub message: Option<String>,
-    pub timestamp: u64,
+    pub timestamp: Option<u64>,
+    pub destination: Option<String>,
+    #[serde(rename = "destinationNumber")]
+    pub destination_number: Option<String>,
+    #[serde(rename = "destinationUuid")]
+    pub destination_uuid: Option<String>,
     #[serde(rename = "groupInfo")]
     pub group_info: Option<GroupInfo>,
     pub quote: Option<Quote>,
@@ -74,7 +142,7 @@ pub struct DataMessage {
     pub mentions: Option<Vec<Mention>>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 #[allow(dead_code)]
 pub struct Mention {
     pub name: Option<String>,
@@ -84,7 +152,7 @@ pub struct Mention {
     pub length: usize,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 #[allow(dead_code)]
 pub struct Reaction {
     pub emoji: String,
@@ -96,7 +164,7 @@ pub struct Reaction {
     pub is_remove: bool,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 #[allow(dead_code)]
 pub struct Quote {
     pub id: u64,
@@ -104,7 +172,7 @@ pub struct Quote {
     pub text: String,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 #[allow(dead_code)]
 pub struct GroupInfo {
     #[serde(rename = "groupId")]
@@ -241,6 +309,7 @@ impl SignalClient {
                         .arg(&phone_clone)
                         .arg("--output=json")
                         .arg("jsonRpc")
+                        .arg("--receive-mode=on-start")
                         .stdin(Stdio::piped())
                         .stdout(Stdio::piped())
                         .stderr(Stdio::inherit())
@@ -558,12 +627,51 @@ mod tests {
         assert!(notif.params.envelope.is_some());
 
         let envelope = notif.params.envelope.unwrap();
-        assert_eq!(envelope.source, "+1234567890");
-        assert_eq!(envelope.timestamp, 1678886400000);
+        assert_eq!(envelope.effective_source(), "+1234567890");
+        assert_eq!(envelope.effective_timestamp(), 1678886400000);
 
         assert!(envelope.data_message.is_some());
         let data_message = envelope.data_message.unwrap();
         assert_eq!(data_message.message.as_deref(), Some("Hello from signal"));
+    }
+
+    #[test]
+    fn test_parse_sync_message() {
+        let raw_json = r#"{
+            "jsonrpc": "2.0",
+            "method": "receive",
+            "params": {
+                "account": "+12506410032",
+                "envelope": {
+                    "source": "+12506410032",
+                    "sourceNumber": "+12506410032",
+                    "sourceUuid": "1f040322-4555-45b4-a35e-b1bc794ffbe3",
+                    "timestamp": 1678886400000,
+                    "syncMessage": {
+                        "sentMessage": {
+                            "destination": "+12506410032",
+                            "destinationNumber": "+12506410032",
+                            "timestamp": 1678886400000,
+                            "message": "Note to self test"
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        let parsed: Result<JsonRpcNotification, _> = serde_json::from_str(raw_json);
+        assert!(parsed.is_ok());
+
+        let notif = parsed.unwrap();
+        assert_eq!(notif.method, "receive");
+        let envelope = notif.params.envelope.unwrap();
+        assert_eq!(envelope.effective_source(), "+12506410032");
+        assert_eq!(envelope.effective_timestamp(), 1678886400000);
+        assert!(envelope.effective_data_message().is_some());
+        assert_eq!(
+            envelope.effective_data_message().unwrap().message.as_deref(),
+            Some("Note to self test")
+        );
     }
 
     #[test]

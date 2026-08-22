@@ -47,17 +47,44 @@ impl SessionManager {
     }
 
     pub async fn handle_message(&self, envelope: Envelope) {
-        let source = envelope.source.clone();
-        let timestamp = envelope.timestamp;
+        let source = envelope.effective_source();
+        let timestamp = envelope.effective_timestamp();
+        let is_sync = envelope.sync_message.is_some();
 
-        if let Some(data) = envelope.data_message {
-            info!("Data Message: {:?}", data);
-            if let Some(text) = data.message {
+        if let Some(data) = envelope.effective_data_message() {
+            info!("Data Message (is_sync: {}): {:?}", is_sync, data);
+            if let Some(text) = &data.message {
                 let is_group = data.group_info.is_some();
                 let group_id = data.group_info.as_ref().map(|g| g.group_id.clone());
 
-                // Determine Context Key (Group ID or Sender)
-                let context_key = group_id.clone().unwrap_or_else(|| source.clone());
+                let reply_address = if is_sync {
+                    if let Some(ref gid) = group_id {
+                        gid.clone()
+                    } else if let Some(ref dest) = data
+                        .destination_uuid
+                        .as_ref()
+                        .or(data.destination_number.as_ref())
+                        .or(data.destination.as_ref())
+                    {
+                        dest.to_string()
+                    } else {
+                        self.bot_number.clone()
+                    }
+                } else {
+                    envelope
+                        .source_uuid
+                        .clone()
+                        .unwrap_or_else(|| source.clone())
+                };
+
+                // Determine Context Key (Group ID or Sender / Destination)
+                let context_key = group_id.clone().unwrap_or_else(|| {
+                    if is_sync {
+                        data.destination.clone().unwrap_or_else(|| source.clone())
+                    } else {
+                        source.clone()
+                    }
+                });
 
                 let raw_display_name = envelope.source_name.clone().unwrap_or_else(|| {
                     envelope
@@ -156,10 +183,6 @@ impl SessionManager {
                     "Processing prompt from {}",
                     crate::utils::anonymize(&source)
                 );
-                let reply_address = envelope
-                    .source_uuid
-                    .clone()
-                    .unwrap_or_else(|| source.clone());
                 self.process_ai_request(
                     reply_address,
                     group_id,
@@ -171,7 +194,7 @@ impl SessionManager {
                     is_explicit_interaction,
                 )
                 .await;
-            } else if let Some(reaction) = data.reaction {
+            } else if let Some(reaction) = &data.reaction {
                 // Handle Reaction
                 if reaction.target_author == self.bot_number {
                     // Check if we have the message context

@@ -8,7 +8,9 @@ use tracing::{Instrument, error, info};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv().ok();
-    tracing_subscriber::fmt::init();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
     info!("Starting Signal Bot...");
 
     // Load Configuration
@@ -112,16 +114,13 @@ pub async fn process_message_stream<F, Fut>(
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrent_requests));
 
     while let Some(msg) = rx.recv().await {
-        if let Some(source) = msg.envelope.as_ref().map(|e| &e.source) {
-            info!("Received Signal Message from: {}", utils::anonymize(source));
-        } else {
-            info!("Received Signal Message (unknown source)");
-        }
-
         if let Some(envelope) = msg.envelope {
-            let source_for_span = envelope.source.clone();
-            let source_for_closure = envelope.source.clone();
-            let ts = envelope.timestamp;
+            let source = envelope.effective_source();
+            info!("Received Signal Message from: {}", utils::anonymize(&source));
+
+            let source_for_span = source.clone();
+            let source_for_closure = source.clone();
+            let ts = envelope.effective_timestamp();
 
             // Acquire a permit before spawning. This blocks if max concurrent tasks are running.
             let permit = match semaphore.clone().acquire_owned().await {
@@ -158,6 +157,8 @@ pub async fn process_message_stream<F, Fut>(
                 }
                 .instrument(span),
             );
+        } else {
+            info!("Received Signal Message (no envelope)");
         }
     }
 }
@@ -206,14 +207,19 @@ mod tests {
         // Send 5 concurrent messages quickly
         for i in 0..5 {
             let env = Envelope {
-                source: "test".to_string(),
+                source: Some("test".to_string()),
                 source_number: None,
                 source_uuid: None,
-                timestamp: i,
+                timestamp: Some(i),
                 source_name: None,
+                source_device: None,
                 data_message: None,
+                sync_message: None,
+                receipt_message: None,
+                typing_message: None,
             };
             tx.send(SignalMessage {
+                account: None,
                 envelope: Some(env),
             })
             .await
@@ -253,14 +259,19 @@ mod tests {
         };
 
         let env = Envelope {
-            source: "test".to_string(),
+            source: Some("test".to_string()),
             source_number: None,
             source_uuid: None,
-            timestamp: 1,
+            timestamp: Some(1),
             source_name: None,
+            source_device: None,
             data_message: None,
+            sync_message: None,
+            receipt_message: None,
+            typing_message: None,
         };
         tx.send(SignalMessage {
+            account: None,
             envelope: Some(env),
         })
         .await
