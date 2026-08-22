@@ -112,10 +112,10 @@ impl StateActor {
     }
 
     fn check_history_capacity(&mut self) {
-        if self.history.len() >= MAX_HISTORY_CONTEXTS {
-            if let Some(oldest) = self.history_order.pop_front() {
-                self.history.remove(&oldest);
-            }
+        if self.history.len() >= MAX_HISTORY_CONTEXTS
+            && let Some(oldest) = self.history_order.pop_front()
+        {
+            self.history.remove(&oldest);
         }
     }
 
@@ -132,10 +132,7 @@ impl StateActor {
                     } else {
                         self.touch_history(&context_key);
                     }
-                    let chat_history = self
-                        .history
-                        .entry(context_key)
-                        .or_insert_with(VecDeque::new);
+                    let chat_history = self.history.entry(context_key).or_default();
                     chat_history.push_back(content);
                 }
                 StateCommand::AddModelMessage {
@@ -148,10 +145,7 @@ impl StateActor {
                     } else {
                         self.touch_history(&context_key);
                     }
-                    let chat_history = self
-                        .history
-                        .entry(context_key)
-                        .or_insert_with(VecDeque::new);
+                    let chat_history = self.history.entry(context_key).or_default();
                     chat_history.push_back(content);
                 }
                 StateCommand::GetHistorySnapshot { context_key, resp } => {
@@ -241,10 +235,9 @@ impl StateActor {
 
                     if !self.sequencers.contains_key(&context_key)
                         && self.sequencers.len() >= MAX_SEQUENCERS
+                        && let Some(oldest) = self.sequencers_order.pop_front()
                     {
-                        if let Some(oldest) = self.sequencers_order.pop_front() {
-                            self.sequencers.remove(&oldest);
-                        }
+                        self.sequencers.remove(&oldest);
                     }
 
                     if !self.sequencers.contains_key(&context_key) {
@@ -274,10 +267,10 @@ impl StateActor {
                     response,
                 } => {
                     // Evict oldest entry if at capacity to prevent unbounded memory growth
-                    if self.sent_messages.len() >= MAX_SENT_MESSAGES {
-                        if let Some(oldest_ts) = self.sent_messages_order.pop_front() {
-                            self.sent_messages.remove(&oldest_ts);
-                        }
+                    if self.sent_messages.len() >= MAX_SENT_MESSAGES
+                        && let Some(oldest_ts) = self.sent_messages_order.pop_front()
+                    {
+                        self.sent_messages.remove(&oldest_ts);
                     }
                     self.sent_messages
                         .insert(timestamp, (context_key, prompt, response));
@@ -296,6 +289,12 @@ impl StateActor {
 #[derive(Clone)]
 pub struct StateManager {
     sender: mpsc::Sender<StateCommand>,
+}
+
+impl Default for StateManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StateManager {

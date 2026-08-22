@@ -236,61 +236,60 @@ impl SessionManager {
                     .or(reaction.target_author_number.as_deref())
                     .or(reaction.target_author_uuid.as_deref())
                     .unwrap_or("");
-                if target_author == self.bot_number {
-                    if let Some(target_sent_ts) = reaction.target_sent_timestamp {
-                        // Check if we have the message context
-                        if let Some((context_key, prompt, response)) = self
-                            .state
-                            .get_sent_message(target_sent_ts)
-                            .await
-                        {
-                            let context_key_clone = context_key.clone();
-                            let prompt_clone = prompt.clone();
-                            let response_clone = response.clone();
-                            let emoji_clone = reaction.emoji.clone().unwrap_or_default();
-                            let ai_client_clone = self.ai_client.clone();
-                            let memory_clone = self.memory.clone();
+                if target_author == self.bot_number
+                    && let Some(target_sent_ts) = reaction.target_sent_timestamp
+                {
+                    // Check if we have the message context
+                    if let Some((context_key, prompt, response)) =
+                        self.state.get_sent_message(target_sent_ts).await
+                    {
+                        let context_key_clone = context_key.clone();
+                        let prompt_clone = prompt.clone();
+                        let response_clone = response.clone();
+                        let emoji_clone = reaction.emoji.clone().unwrap_or_default();
+                        let ai_client_clone = self.ai_client.clone();
+                        let memory_clone = self.memory.clone();
 
-                            tokio::spawn(async move {
-                                info!(
-                                    "Analyzing reaction {} for prompt in {}",
-                                    emoji_clone, context_key_clone
-                                );
-                                match ai_client_clone
-                                    .analyze_reaction(&prompt_clone, &response_clone, &emoji_clone)
-                                    .await
-                                {
-                                    Ok(analysis) => {
-                                        info!("Reaction Analysis: {:?}", analysis);
-                                        if let Err(e) = memory_clone
-                                            .add_interaction(
-                                                &context_key_clone,
-                                                prompt_clone,
-                                                response_clone,
-                                                analysis,
-                                            )
-                                            .await
-                                        {
-                                            error!("Failed to save interaction: {:?}", e);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to analyze reaction: {:?}", e);
+                        tokio::spawn(async move {
+                            info!(
+                                "Analyzing reaction {} for prompt in {}",
+                                emoji_clone, context_key_clone
+                            );
+                            match ai_client_clone
+                                .analyze_reaction(&prompt_clone, &response_clone, &emoji_clone)
+                                .await
+                            {
+                                Ok(analysis) => {
+                                    info!("Reaction Analysis: {:?}", analysis);
+                                    if let Err(e) = memory_clone
+                                        .add_interaction(
+                                            &context_key_clone,
+                                            prompt_clone,
+                                            response_clone,
+                                            analysis,
+                                        )
+                                        .await
+                                    {
+                                        error!("Failed to save interaction: {:?}", e);
                                     }
                                 }
-                            });
-                        } else {
-                            warn!(
-                                "Received reaction for unknown message timestamp: {:?}",
-                                target_sent_ts
-                            );
-                        }
+                                Err(e) => {
+                                    error!("Failed to analyze reaction: {:?}", e);
+                                }
+                            }
+                        });
+                    } else {
+                        warn!(
+                            "Received reaction for unknown message timestamp: {:?}",
+                            target_sent_ts
+                        );
                     }
                 }
             }
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn process_ai_request(
         &self,
         reply_address: String,
@@ -354,6 +353,7 @@ impl SessionManager {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn generate_text_response(
         &self,
         intent: &str,
@@ -421,34 +421,34 @@ impl SessionManager {
         }
 
         // 2. Inject Group Profile (if applicable)
-        if let Some(gid) = &group_id {
-            if let Ok(group_profile) = self.profile_manager.get_group_profile(gid, None).await {
-                let mut group_context = format!(
-                    "Group Chat Profile for {}:\n",
-                    group_profile.group_name.as_deref().unwrap_or("this group")
-                );
-                group_context.push_str(&format!("Vibe: {}\n", group_profile.group_vibe));
-                if !group_profile.inside_jokes.is_empty() {
-                    group_context.push_str(&format!(
-                        "Inside Jokes/Memes: {}\n",
-                        group_profile.inside_jokes.join(", ")
-                    ));
-                }
-                if !group_profile.common_topics.is_empty() {
-                    group_context.push_str(&format!(
-                        "Common Topics: {}\n",
-                        group_profile.common_topics.join(", ")
-                    ));
-                }
-                if !group_profile.important_memories.is_empty() {
-                    group_context.push_str(&format!(
-                        "Important Memories: {}\n",
-                        group_profile.important_memories.join(", ")
-                    ));
-                }
-                group_context.push_str("\nUse this info to understand the context of the group chat. Reference inside jokes sparingly but accurately if the context fits.");
-                system_instructions.push(group_context);
+        if let Some(gid) = &group_id
+            && let Ok(group_profile) = self.profile_manager.get_group_profile(gid, None).await
+        {
+            let mut group_context = format!(
+                "Group Chat Profile for {}:\n",
+                group_profile.group_name.as_deref().unwrap_or("this group")
+            );
+            group_context.push_str(&format!("Vibe: {}\n", group_profile.group_vibe));
+            if !group_profile.inside_jokes.is_empty() {
+                group_context.push_str(&format!(
+                    "Inside Jokes/Memes: {}\n",
+                    group_profile.inside_jokes.join(", ")
+                ));
             }
+            if !group_profile.common_topics.is_empty() {
+                group_context.push_str(&format!(
+                    "Common Topics: {}\n",
+                    group_profile.common_topics.join(", ")
+                ));
+            }
+            if !group_profile.important_memories.is_empty() {
+                group_context.push_str(&format!(
+                    "Important Memories: {}\n",
+                    group_profile.important_memories.join(", ")
+                ));
+            }
+            group_context.push_str("\nUse this info to understand the context of the group chat. Reference inside jokes sparingly but accurately if the context fits.");
+            system_instructions.push(group_context);
         }
 
         if override_model.is_none() {
@@ -471,8 +471,7 @@ impl SessionManager {
         // Clone history to Vec for API (Snapshot)
         let history_vec: Vec<Content> = self.state.get_history_snapshot(context_key).await;
 
-        let sanitized_history =
-            crate::ai::sanitize_contents(&history_vec, Some(current_prompt));
+        let sanitized_history = crate::ai::sanitize_contents(&history_vec, Some(current_prompt));
 
         match self
             .ai_client
@@ -691,41 +690,37 @@ impl SessionManager {
                                 }
 
                                 // 2. Update Group Profile (if applicable)
-                                if let Some(gid) = &group_id_spawn_clone {
-                                    if let Ok(current_group) = pm.get_group_profile(gid, None).await
-                                    {
-                                        // Provide a slightly richer history string for the group context
-                                        let user_display = source_name_clone
-                                            .unwrap_or_else(|| profile_key_clone.clone());
-                                        let history_str = format!(
-                                            "{} (User): {}\n{} (Bot): {}",
-                                            user_display, prompt_clone, bot_name_inner, text_clone
-                                        );
+                                if let Some(gid) = &group_id_spawn_clone
+                                    && let Ok(current_group) = pm.get_group_profile(gid, None).await
+                                {
+                                    // Provide a slightly richer history string for the group context
+                                    let user_display = source_name_clone
+                                        .unwrap_or_else(|| profile_key_clone.clone());
+                                    let history_str = format!(
+                                        "{} (User): {}\n{} (Bot): {}",
+                                        user_display, prompt_clone, bot_name_inner, text_clone
+                                    );
 
-                                        match aic
-                                            .analyze_group_profile_update(
-                                                &current_group,
-                                                &history_str,
-                                            )
-                                            .await
-                                        {
-                                            Ok(updated_group) => {
-                                                if let Err(e) =
-                                                    pm.save_group_profile(&updated_group).await
-                                                {
-                                                    error!(
-                                                        "Failed to save group profile for {}: {:?}",
-                                                        gid, e
-                                                    );
-                                                } else {
-                                                    info!("Updated group profile for {}", gid);
-                                                }
+                                    match aic
+                                        .analyze_group_profile_update(&current_group, &history_str)
+                                        .await
+                                    {
+                                        Ok(updated_group) => {
+                                            if let Err(e) =
+                                                pm.save_group_profile(&updated_group).await
+                                            {
+                                                error!(
+                                                    "Failed to save group profile for {}: {:?}",
+                                                    gid, e
+                                                );
+                                            } else {
+                                                info!("Updated group profile for {}", gid);
                                             }
-                                            Err(e) => error!(
-                                                "Failed to analyze group profile update: {:?}",
-                                                e
-                                            ),
                                         }
+                                        Err(e) => error!(
+                                            "Failed to analyze group profile update: {:?}",
+                                            e
+                                        ),
                                     }
                                 }
                             });

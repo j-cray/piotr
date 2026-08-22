@@ -110,14 +110,28 @@ impl Envelope {
         if let Some(dm) = &self.data_message {
             return Some(dm.clone());
         }
-        if let Some(em) = &self.edit_message {
-            if let Some(dm) = &em.data_message {
-                return Some(dm.clone());
-            }
+        if let Some(em) = &self.edit_message
+            && let Some(dm) = &em.data_message
+        {
+            return Some(dm.clone());
         }
-        if let Some(sync) = &self.sync_message {
-            if let Some(sm) = &sync.sent_message {
-                if let Some(dm) = &sm.data_message {
+        if let Some(sync) = &self.sync_message
+            && let Some(sm) = &sync.sent_message
+        {
+            if let Some(dm) = &sm.data_message {
+                let mut dm_clone = dm.clone();
+                if dm_clone.destination.is_none() {
+                    dm_clone.destination = sm.destination.clone();
+                }
+                if dm_clone.destination_number.is_none() {
+                    dm_clone.destination_number = sm.destination_number.clone();
+                }
+                if dm_clone.destination_uuid.is_none() {
+                    dm_clone.destination_uuid = sm.destination_uuid.clone();
+                }
+                return Some(dm_clone);
+            } else if let Some(em) = &sm.edit_message {
+                if let Some(dm) = &em.data_message {
                     let mut dm_clone = dm.clone();
                     if dm_clone.destination.is_none() {
                         dm_clone.destination = sm.destination.clone();
@@ -129,37 +143,23 @@ impl Envelope {
                         dm_clone.destination_uuid = sm.destination_uuid.clone();
                     }
                     return Some(dm_clone);
-                } else if let Some(em) = &sm.edit_message {
-                    if let Some(dm) = &em.data_message {
-                        let mut dm_clone = dm.clone();
-                        if dm_clone.destination.is_none() {
-                            dm_clone.destination = sm.destination.clone();
-                        }
-                        if dm_clone.destination_number.is_none() {
-                            dm_clone.destination_number = sm.destination_number.clone();
-                        }
-                        if dm_clone.destination_uuid.is_none() {
-                            dm_clone.destination_uuid = sm.destination_uuid.clone();
-                        }
-                        return Some(dm_clone);
-                    }
-                } else if sm.message.is_some() || sm.reaction.is_some() {
-                    // Fallback for flattened payloads
-                    return Some(DataMessage {
-                        message: sm.message.clone(),
-                        timestamp: sm.timestamp,
-                        destination: sm.destination.clone(),
-                        destination_number: sm.destination_number.clone(),
-                        destination_uuid: sm.destination_uuid.clone(),
-                        expires_in_seconds: None,
-                        view_once: None,
-                        group_info: sm.group_info.clone(),
-                        quote: sm.quote.clone(),
-                        reaction: sm.reaction.clone(),
-                        mentions: sm.mentions.clone(),
-                        attachments: None,
-                    });
                 }
+            } else if sm.message.is_some() || sm.reaction.is_some() {
+                // Fallback for flattened payloads
+                return Some(DataMessage {
+                    message: sm.message.clone(),
+                    timestamp: sm.timestamp,
+                    destination: sm.destination.clone(),
+                    destination_number: sm.destination_number.clone(),
+                    destination_uuid: sm.destination_uuid.clone(),
+                    expires_in_seconds: None,
+                    view_once: None,
+                    group_info: sm.group_info.clone(),
+                    quote: sm.quote.clone(),
+                    reaction: sm.reaction.clone(),
+                    mentions: sm.mentions.clone(),
+                    attachments: None,
+                });
             }
         }
         None
@@ -293,16 +293,16 @@ pub struct GroupInfo {
     pub group_type: Option<String>,
 }
 
+type PendingRequestsMap = Arc<
+    std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<Result<()>>>>,
+>;
+
 #[derive(Clone)]
 pub struct SignalClient {
     user_phone: String,
     tx: mpsc::Sender<Value>,
     next_request_id: Arc<AtomicUsize>,
-    pending_requests: Arc<
-        std::sync::Mutex<
-            std::collections::HashMap<String, tokio::sync::oneshot::Sender<Result<()>>>,
-        >,
-    >,
+    pending_requests: PendingRequestsMap,
 }
 
 impl SignalClient {
@@ -348,10 +348,11 @@ impl SignalClient {
         let (tx_in, mut rx_in) = mpsc::channel::<Value>(100);
         let (tx_out, rx_out) = mpsc::channel::<SignalMessage>(100);
 
-        let pending_requests = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
-            String,
-            tokio::sync::oneshot::Sender<Result<()>>,
-        >::new()));
+        let pending_requests: PendingRequestsMap =
+            Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+                String,
+                tokio::sync::oneshot::Sender<Result<()>>,
+            >::new()));
         let pending_requests_clone = pending_requests.clone();
 
         let phone_clone = user_phone.to_string();
@@ -376,11 +377,7 @@ impl SignalClient {
                 reader: &mut Option<
                     tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
                 >,
-                pending_requests: &Arc<
-                    std::sync::Mutex<
-                        std::collections::HashMap<String, tokio::sync::oneshot::Sender<Result<()>>>,
-                    >,
-                >,
+                pending_requests: &PendingRequestsMap,
                 error_message: &'static str,
             ) {
                 if let Some(mut child) = current_child.take() {
@@ -483,25 +480,23 @@ impl SignalClient {
                                         }
                                         Err(e) => {
                                             error!("Failed to serialize Signal RPC payload: {}", e);
-                                            if let Some(id_val) = payload.get("id") {
-                                                if let Some(id_str) = id_val.as_str() {
+                                            if let Some(id_val) = payload.get("id")
+                                                && let Some(id_str) = id_val.as_str() {
                                                     let mut map = pending_requests_clone.lock().unwrap();
                                                     if let Some(tx) = map.remove(id_str) {
                                                         let _ = tx.send(Err(anyhow::anyhow!("Failed to serialize payload: {}", e)));
                                                     }
                                                 }
-                                            }
                                         }
                                     }
                                 } else {
-                                    if let Some(id_val) = payload.get("id") {
-                                        if let Some(id_str) = id_val.as_str() {
+                                    if let Some(id_val) = payload.get("id")
+                                        && let Some(id_str) = id_val.as_str() {
                                             let mut map = pending_requests_clone.lock().unwrap();
                                             if let Some(tx) = map.remove(id_str) {
                                                 let _ = tx.send(Err(anyhow::anyhow!("Signal-cli not running, dropped request")));
                                             }
                                         }
-                                    }
                                 }
                             },
                             None => {
@@ -527,8 +522,8 @@ impl SignalClient {
                                 info!("Raw Signal Line received: {}", line);
 
                                 if let Ok(rpc) = serde_json::from_str::<JsonRpcNotification>(&line) {
-                                     if rpc.method == "receive" {
-                                        if let Err(e) = tx_out.send(rpc.params).await {
+                                     if rpc.method == "receive"
+                                        && let Err(e) = tx_out.send(rpc.params).await {
                                             error!("Receiver dropped: {}", e);
                                             if let Some(mut child) = current_child.take() {
                                                 let _ = child.kill().await;
@@ -536,7 +531,6 @@ impl SignalClient {
                                             }
                                             break;
                                         }
-                                     }
                                 } else if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(&line) {
                                     if let Some(id_str) = resp.id {
                                         let sender_opt = pending_requests_clone.lock().unwrap().remove(&id_str);
@@ -606,10 +600,10 @@ impl SignalClient {
             })
         };
 
-        if let Some(att) = attachment {
-            if let Some(obj) = params.as_object_mut() {
-                obj.insert("attachment".to_string(), json!([att]));
-            }
+        if let Some(att) = attachment
+            && let Some(obj) = params.as_object_mut()
+        {
+            obj.insert("attachment".to_string(), json!([att]));
         }
 
         let id_str = self.next_id();
@@ -782,7 +776,11 @@ mod tests {
         assert_eq!(envelope.effective_timestamp(), 1678886400000);
         assert!(envelope.effective_data_message().is_some());
         assert_eq!(
-            envelope.effective_data_message().unwrap().message.as_deref(),
+            envelope
+                .effective_data_message()
+                .unwrap()
+                .message
+                .as_deref(),
             Some("Note to self test")
         );
     }
@@ -928,7 +926,10 @@ mod tests {
         let dm = envelope.effective_data_message();
         assert!(dm.is_some());
         let data = dm.unwrap();
-        assert_eq!(data.message.as_deref(), Some("Real nested sync message test"));
+        assert_eq!(
+            data.message.as_deref(),
+            Some("Real nested sync message test")
+        );
         assert_eq!(data.destination.as_deref(), Some("+12506410032"));
     }
 
@@ -937,7 +938,7 @@ mod tests {
         // Test parsing an extremely long quote/mention to ensure it doesn't panic
         let mut long_text = String::new();
         for _ in 0..10_000 {
-            long_text.push_str("A");
+            long_text.push('A');
         }
 
         // This simulates a DoS attempt via giant payloads on the JSON parser

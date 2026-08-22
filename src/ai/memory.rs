@@ -218,11 +218,11 @@ impl DbProfileManager {
         };
 
         // Auto-update name logic
-        if let Some(new_name) = current_name {
-            if profile.name.as_ref() != Some(&new_name) {
-                profile.name = Some(new_name);
-                self.save_profile(&profile).await?;
-            }
+        if let Some(new_name) = current_name
+            && profile.name.as_ref() != Some(&new_name)
+        {
+            profile.name = Some(new_name);
+            self.save_profile(&profile).await?;
         }
 
         Ok(profile)
@@ -276,11 +276,11 @@ impl DbProfileManager {
             }
         };
 
-        if let Some(new_name) = current_name {
-            if profile.group_name.as_ref() != Some(&new_name) {
-                profile.group_name = Some(new_name);
-                self.save_group_profile(&profile).await?;
-            }
+        if let Some(new_name) = current_name
+            && profile.group_name.as_ref() != Some(&new_name)
+        {
+            profile.group_name = Some(new_name);
+            self.save_group_profile(&profile).await?;
         }
 
         Ok(profile)

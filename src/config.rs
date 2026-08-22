@@ -198,33 +198,33 @@ impl AppConfig {
 
     fn apply_env_injection(value: &mut Value) -> Result<std::collections::HashMap<String, String>> {
         let mut injected_env = std::collections::HashMap::new();
-        if let Some(env_val) = value.get_mut("env") {
-            if let Some(env_obj) = env_val.as_object_mut() {
-                // vars map
-                if let Some(vars_val) = env_obj.remove("vars") {
-                    if let Some(vars_obj) = vars_val.as_object() {
-                        for (k, v) in vars_obj {
-                            if let Some(s) = v.as_str() {
-                                injected_env.insert(k.clone(), s.to_string());
-                            }
-                        }
+        if let Some(env_val) = value.get_mut("env")
+            && let Some(env_obj) = env_val.as_object_mut()
+        {
+            // vars map
+            if let Some(vars_val) = env_obj.remove("vars")
+                && let Some(vars_obj) = vars_val.as_object()
+            {
+                for (k, v) in vars_obj {
+                    if let Some(s) = v.as_str() {
+                        injected_env.insert(k.clone(), s.to_string());
                     }
                 }
+            }
 
-                // other string fields
-                let mut to_remove = Vec::new();
-                for (k, v) in env_obj.iter() {
-                    if k != "shellEnv" {
-                        if let Some(s) = v.as_str() {
-                            injected_env.insert(k.clone(), s.to_string());
-                            to_remove.push(k.clone());
-                        }
-                    }
+            // other string fields
+            let mut to_remove = Vec::new();
+            for (k, v) in env_obj.iter() {
+                if k != "shellEnv"
+                    && let Some(s) = v.as_str()
+                {
+                    injected_env.insert(k.clone(), s.to_string());
+                    to_remove.push(k.clone());
                 }
+            }
 
-                for k in to_remove {
-                    env_obj.remove(&k);
-                }
+            for k in to_remove {
+                env_obj.remove(&k);
             }
         }
         Ok(injected_env)

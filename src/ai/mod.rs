@@ -62,6 +62,12 @@ pub struct EndpointRateLimiters {
     pub count_tokens: Mutex<Instant>,
 }
 
+impl Default for EndpointRateLimiters {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EndpointRateLimiters {
     pub fn new() -> Self {
         let past = Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
@@ -172,11 +178,11 @@ pub fn sanitize_contents(contents: &[Content], fallback_user_prompt: Option<&str
             "user".to_string()
         };
 
-        if let Some(last) = cleaned.last_mut() {
-            if last.role == role {
-                last.parts.extend(valid_parts);
-                continue;
-            }
+        if let Some(last) = cleaned.last_mut()
+            && last.role == role
+        {
+            last.parts.extend(valid_parts);
+            continue;
         }
 
         cleaned.push(Content {
@@ -195,29 +201,9 @@ pub fn sanitize_contents(contents: &[Content], fallback_user_prompt: Option<&str
     }
 
     // Handle trailing model turns
-    if let Some(last) = cleaned.last() {
-        if last.role == "model" {
-            if let Some(prompt) = fallback_user_prompt.filter(|p| !p.trim().is_empty()) {
-                cleaned.push(Content {
-                    role: "user".to_string(),
-                    parts: vec![Part {
-                        text: Some(prompt.trim().to_string()),
-                    }],
-                });
-            } else {
-                while let Some(last) = cleaned.last() {
-                    if last.role == "model" {
-                        cleaned.pop();
-                    } else {
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    // If completely empty and fallback prompt provided, initialize with user prompt
-    if cleaned.is_empty() {
+    if let Some(last) = cleaned.last()
+        && last.role == "model"
+    {
         if let Some(prompt) = fallback_user_prompt.filter(|p| !p.trim().is_empty()) {
             cleaned.push(Content {
                 role: "user".to_string(),
@@ -225,7 +211,27 @@ pub fn sanitize_contents(contents: &[Content], fallback_user_prompt: Option<&str
                     text: Some(prompt.trim().to_string()),
                 }],
             });
+        } else {
+            while let Some(last) = cleaned.last() {
+                if last.role == "model" {
+                    cleaned.pop();
+                } else {
+                    break;
+                }
+            }
         }
+    }
+
+    // If completely empty and fallback prompt provided, initialize with user prompt
+    if cleaned.is_empty()
+        && let Some(prompt) = fallback_user_prompt.filter(|p| !p.trim().is_empty())
+    {
+        cleaned.push(Content {
+            role: "user".to_string(),
+            parts: vec![Part {
+                text: Some(prompt.trim().to_string()),
+            }],
+        });
     }
 
     cleaned
@@ -312,10 +318,8 @@ impl VertexClient {
             }
         });
 
-        if use_search {
-            if let Some(obj) = body_json.as_object_mut() {
-                obj.insert("tools".to_string(), json!([{ "googleSearch": {} }]));
-            }
+        if use_search && let Some(obj) = body_json.as_object_mut() {
+            obj.insert("tools".to_string(), json!([{ "googleSearch": {} }]));
         }
 
         let mut retries = 0;
@@ -351,32 +355,31 @@ impl VertexClient {
                     }
                 };
 
-                if let Some(candidates) = response.candidates {
-                    if let Some(first) = candidates.first() {
-                        // Check for finishReason
-                        if let Some(reason) = &first.finish_reason {
-                            if reason != "STOP" {
-                                tracing::warn!(
-                                    "Vertex AI finishReason: {}. Safety ratings: {:?}",
-                                    reason,
-                                    first.safety_ratings
-                                );
-                                if reason == "SAFETY" || reason == "RECITATION" {
-                                    return Ok(format!(
-                                        "I cannot answer that. Google says no ({})",
-                                        reason
-                                    ));
-                                }
-                            }
+                if let Some(candidates) = response.candidates
+                    && let Some(first) = candidates.first()
+                {
+                    // Check for finishReason
+                    if let Some(reason) = &first.finish_reason
+                        && reason != "STOP"
+                    {
+                        tracing::warn!(
+                            "Vertex AI finishReason: {}. Safety ratings: {:?}",
+                            reason,
+                            first.safety_ratings
+                        );
+                        if reason == "SAFETY" || reason == "RECITATION" {
+                            return Ok(format!(
+                                "I cannot answer that. Google says no ({})",
+                                reason
+                            ));
                         }
+                    }
 
-                        if let Some(content) = &first.content {
-                            if let Some(parts) = &content.parts.first() {
-                                if let Some(text) = &parts.text {
-                                    return Ok(text.to_string());
-                                }
-                            }
-                        }
+                    if let Some(content) = &first.content
+                        && let Some(parts) = &content.parts.first()
+                        && let Some(text) = &parts.text
+                    {
+                        return Ok(text.to_string());
                     }
                 }
 
@@ -443,16 +446,14 @@ impl VertexClient {
             let status = resp.status();
             if status.is_success() {
                 let json: serde_json::Value = resp.json().await?;
-                if let Some(predictions) = json.get("predictions").and_then(|p| p.as_array()) {
-                    if let Some(first) = predictions.first() {
-                        if let Some(bytes_b64) =
-                            first.get("bytesBase64Encoded").and_then(|b| b.as_str())
-                        {
-                            use base64::{Engine as _, engine::general_purpose};
-                            let bytes = general_purpose::STANDARD.decode(bytes_b64)?;
-                            return Ok(bytes);
-                        }
-                    }
+                if let Some(predictions) = json.get("predictions").and_then(|p| p.as_array())
+                    && let Some(first) = predictions.first()
+                    && let Some(bytes_b64) =
+                        first.get("bytesBase64Encoded").and_then(|b| b.as_str())
+                {
+                    use base64::{Engine as _, engine::general_purpose};
+                    let bytes = general_purpose::STANDARD.decode(bytes_b64)?;
+                    return Ok(bytes);
                 }
                 anyhow::bail!("No image in response: {:?}", json);
             } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
@@ -524,20 +525,16 @@ impl VertexClient {
             let status = resp.status();
             if status.is_success() {
                 let json: serde_json::Value = resp.json().await?;
-                if let Some(candidates) = json.get("candidates").and_then(|c| c.as_array()) {
-                    if let Some(first) = candidates.first() {
-                        if let Some(parts) = first
-                            .get("content")
-                            .and_then(|c| c.get("parts"))
-                            .and_then(|p| p.as_array())
-                        {
-                            if let Some(text_part) = parts.first() {
-                                if let Some(text) = text_part.get("text").and_then(|t| t.as_str()) {
-                                    return Ok(text.trim().to_uppercase());
-                                }
-                            }
-                        }
-                    }
+                if let Some(candidates) = json.get("candidates").and_then(|c| c.as_array())
+                    && let Some(first) = candidates.first()
+                    && let Some(parts) = first
+                        .get("content")
+                        .and_then(|c| c.get("parts"))
+                        .and_then(|p| p.as_array())
+                    && let Some(text_part) = parts.first()
+                    && let Some(text) = text_part.get("text").and_then(|t| t.as_str())
+                {
+                    return Ok(text.trim().to_uppercase());
                 }
                 return Ok("FLASH".to_string());
             } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
@@ -631,34 +628,30 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
             if status.is_success() {
                 let json: serde_json::Value = resp.json().await?;
                 // Extract text
-                if let Some(candidates) = json.get("candidates").and_then(|c| c.as_array()) {
-                    if let Some(first) = candidates.first() {
-                        if let Some(parts) = first
-                            .get("content")
-                            .and_then(|c| c.get("parts"))
-                            .and_then(|p| p.as_array())
-                        {
-                            if let Some(text_part) = parts.first() {
-                                if let Some(text) = text_part.get("text").and_then(|t| t.as_str()) {
-                                    // Parse JSON from text
-                                    match serde_json::from_str::<ReactionAnalysis>(text) {
-                                        Ok(analysis) => return Ok(analysis),
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "Failed to parse analysis JSON: {}. Text length: {}",
-                                                e,
-                                                text.len()
-                                            );
-                                            // Fallback
-                                            return Ok(ReactionAnalysis {
-                                                sentiment_score: 0.0,
-                                                reasoning: format!("Failed to parse: {}", text),
-                                                tags: vec!["parse_error".to_string()],
-                                            });
-                                        }
-                                    }
-                                }
-                            }
+                if let Some(candidates) = json.get("candidates").and_then(|c| c.as_array())
+                    && let Some(first) = candidates.first()
+                    && let Some(parts) = first
+                        .get("content")
+                        .and_then(|c| c.get("parts"))
+                        .and_then(|p| p.as_array())
+                    && let Some(text_part) = parts.first()
+                    && let Some(text) = text_part.get("text").and_then(|t| t.as_str())
+                {
+                    // Parse JSON from text
+                    match serde_json::from_str::<ReactionAnalysis>(text) {
+                        Ok(analysis) => return Ok(analysis),
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to parse analysis JSON: {}. Text length: {}",
+                                e,
+                                text.len()
+                            );
+                            // Fallback
+                            return Ok(ReactionAnalysis {
+                                sentiment_score: 0.0,
+                                reasoning: format!("Failed to parse: {}", text),
+                                tags: vec!["parse_error".to_string()],
+                            });
                         }
                     }
                 }
@@ -765,38 +758,32 @@ Structure:
             let status = resp.status();
             if status.is_success() {
                 let json: serde_json::Value = resp.json().await?;
-                if let Some(candidates) = json.get("candidates").and_then(|c| c.as_array()) {
-                    if let Some(first) = candidates.first() {
-                        if let Some(parts) = first
-                            .get("content")
-                            .and_then(|c| c.get("parts"))
-                            .and_then(|p| p.as_array())
-                        {
-                            if let Some(text_part) = parts.first() {
-                                if let Some(text) = text_part.get("text").and_then(|t| t.as_str()) {
-                                    match serde_json::from_str::<crate::ai::memory::UserProfile>(
-                                        text,
-                                    ) {
-                                        Ok(mut profile) => {
-                                            // Ensure ID and timestamp are handled correctly
-                                            profile.id = current_profile.id.clone();
-                                            profile.last_updated = std::time::SystemTime::now()
-                                                .duration_since(std::time::UNIX_EPOCH)?
-                                                .as_secs();
-                                            return Ok(profile);
-                                        }
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "Failed to parse profile update JSON: {}. Text length: {}",
-                                                e,
-                                                text.len()
-                                            );
-                                            // Fail safe: return original
-                                            return Ok(current_profile.clone());
-                                        }
-                                    }
-                                }
-                            }
+                if let Some(candidates) = json.get("candidates").and_then(|c| c.as_array())
+                    && let Some(first) = candidates.first()
+                    && let Some(parts) = first
+                        .get("content")
+                        .and_then(|c| c.get("parts"))
+                        .and_then(|p| p.as_array())
+                    && let Some(text_part) = parts.first()
+                    && let Some(text) = text_part.get("text").and_then(|t| t.as_str())
+                {
+                    match serde_json::from_str::<crate::ai::memory::UserProfile>(text) {
+                        Ok(mut profile) => {
+                            // Ensure ID and timestamp are handled correctly
+                            profile.id = current_profile.id.clone();
+                            profile.last_updated = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)?
+                                .as_secs();
+                            return Ok(profile);
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to parse profile update JSON: {}. Text length: {}",
+                                e,
+                                text.len()
+                            );
+                            // Fail safe: return original
+                            return Ok(current_profile.clone());
                         }
                     }
                 }
@@ -899,38 +886,32 @@ Structure:
             let status = resp.status();
             if status.is_success() {
                 let json: serde_json::Value = resp.json().await?;
-                if let Some(candidates) = json.get("candidates").and_then(|c| c.as_array()) {
-                    if let Some(first) = candidates.first() {
-                        if let Some(parts) = first
-                            .get("content")
-                            .and_then(|c| c.get("parts"))
-                            .and_then(|p| p.as_array())
-                        {
-                            if let Some(text_part) = parts.first() {
-                                if let Some(text) = text_part.get("text").and_then(|t| t.as_str()) {
-                                    match serde_json::from_str::<crate::ai::memory::GroupProfile>(
-                                        text,
-                                    ) {
-                                        Ok(mut profile) => {
-                                            // Ensure ID and timestamp are handled correctly
-                                            profile.id = current_profile.id.clone();
-                                            profile.last_updated = std::time::SystemTime::now()
-                                                .duration_since(std::time::UNIX_EPOCH)?
-                                                .as_secs();
-                                            return Ok(profile);
-                                        }
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "Failed to parse group profile update JSON: {}. Text length: {}",
-                                                e,
-                                                text.len()
-                                            );
-                                            // Fail safe: return original
-                                            return Ok(current_profile.clone());
-                                        }
-                                    }
-                                }
-                            }
+                if let Some(candidates) = json.get("candidates").and_then(|c| c.as_array())
+                    && let Some(first) = candidates.first()
+                    && let Some(parts) = first
+                        .get("content")
+                        .and_then(|c| c.get("parts"))
+                        .and_then(|p| p.as_array())
+                    && let Some(text_part) = parts.first()
+                    && let Some(text) = text_part.get("text").and_then(|t| t.as_str())
+                {
+                    match serde_json::from_str::<crate::ai::memory::GroupProfile>(text) {
+                        Ok(mut profile) => {
+                            // Ensure ID and timestamp are handled correctly
+                            profile.id = current_profile.id.clone();
+                            profile.last_updated = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)?
+                                .as_secs();
+                            return Ok(profile);
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to parse group profile update JSON: {}. Text length: {}",
+                                e,
+                                text.len()
+                            );
+                            // Fail safe: return original
+                            return Ok(current_profile.clone());
                         }
                     }
                 }
@@ -1173,7 +1154,7 @@ mod tests {
         use base64::{Engine as _, engine::general_purpose};
         let bytes = general_purpose::STANDARD.decode(bytes_b64).unwrap();
 
-        assert!(bytes.len() > 0);
+        assert!(!bytes.is_empty());
         assert_eq!(&bytes[0..4], &[0x89, 0x50, 0x4e, 0x47]); // PNG header
     }
 
@@ -1196,7 +1177,7 @@ mod tests {
         {
             Ok(bytes) => {
                 println!("Image generated successfully, size: {} bytes", bytes.len());
-                assert!(bytes.len() > 0);
+                assert!(!bytes.is_empty());
             }
             Err(e) => panic!("Image generation failed: {:?}", e),
         }
@@ -1384,11 +1365,15 @@ mod tests {
         let contents = vec![
             Content {
                 role: "user".to_string(),
-                parts: vec![Part { text: Some("Hi".to_string()) }],
+                parts: vec![Part {
+                    text: Some("Hi".to_string()),
+                }],
             },
             Content {
                 role: "model".to_string(),
-                parts: vec![Part { text: Some("Understood".to_string()) }],
+                parts: vec![Part {
+                    text: Some("Understood".to_string()),
+                }],
             },
         ];
 
@@ -1404,7 +1389,10 @@ mod tests {
         assert_eq!(sanitized_with_fallback[0].role, "user");
         assert_eq!(sanitized_with_fallback[1].role, "model");
         assert_eq!(sanitized_with_fallback[2].role, "user");
-        assert_eq!(sanitized_with_fallback[2].parts[0].text.as_deref(), Some("How are you?"));
+        assert_eq!(
+            sanitized_with_fallback[2].parts[0].text.as_deref(),
+            Some("How are you?")
+        );
     }
 
     #[test]
@@ -1412,11 +1400,15 @@ mod tests {
         let contents = vec![
             Content {
                 role: "model".to_string(),
-                parts: vec![Part { text: Some("Hello".to_string()) }],
+                parts: vec![Part {
+                    text: Some("Hello".to_string()),
+                }],
             },
             Content {
                 role: "user".to_string(),
-                parts: vec![Part { text: Some("Question".to_string()) }],
+                parts: vec![Part {
+                    text: Some("Question".to_string()),
+                }],
             },
         ];
 
@@ -1431,23 +1423,33 @@ mod tests {
         let contents = vec![
             Content {
                 role: "user".to_string(),
-                parts: vec![Part { text: Some("Part 1".to_string()) }],
+                parts: vec![Part {
+                    text: Some("Part 1".to_string()),
+                }],
             },
             Content {
                 role: "user".to_string(),
-                parts: vec![Part { text: Some("Part 2".to_string()) }],
+                parts: vec![Part {
+                    text: Some("Part 2".to_string()),
+                }],
             },
             Content {
                 role: "model".to_string(),
-                parts: vec![Part { text: Some("Response 1".to_string()) }],
+                parts: vec![Part {
+                    text: Some("Response 1".to_string()),
+                }],
             },
             Content {
                 role: "model".to_string(),
-                parts: vec![Part { text: Some("Response 2".to_string()) }],
+                parts: vec![Part {
+                    text: Some("Response 2".to_string()),
+                }],
             },
             Content {
                 role: "user".to_string(),
-                parts: vec![Part { text: Some("Part 3".to_string()) }],
+                parts: vec![Part {
+                    text: Some("Part 3".to_string()),
+                }],
             },
         ];
 
@@ -1466,11 +1468,18 @@ mod tests {
         let contents = vec![
             Content {
                 role: "user".to_string(),
-                parts: vec![Part { text: Some("   ".to_string()) }, Part { text: None }],
+                parts: vec![
+                    Part {
+                        text: Some("   ".to_string()),
+                    },
+                    Part { text: None },
+                ],
             },
             Content {
                 role: "user".to_string(),
-                parts: vec![Part { text: Some("Actual text".to_string()) }],
+                parts: vec![Part {
+                    text: Some("Actual text".to_string()),
+                }],
             },
         ];
 

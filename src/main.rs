@@ -154,7 +154,7 @@ pub async fn process_message_stream<F, Fut>(
                     )
                     .await;
 
-                    if let Err(_) = result {
+                    if result.is_err() {
                         error!(
                             "Message processing timed out after {} seconds (Source: {}, TS: {})",
                             timeout_secs,

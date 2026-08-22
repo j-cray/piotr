@@ -18,10 +18,10 @@ impl Database {
             // correspond to a filesystem path.
             if !path_str.is_empty() && !path_str.starts_with(':') {
                 let path = Path::new(path_str);
-                if let Some(parent) = path.parent() {
-                    if !parent.as_os_str().is_empty() {
-                        fs::create_dir_all(parent)?;
-                    }
+                if let Some(parent) = path.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    fs::create_dir_all(parent)?;
                 }
             }
         }
