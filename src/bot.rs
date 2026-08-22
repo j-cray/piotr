@@ -180,8 +180,17 @@ impl SessionManager {
                 }
 
                 // We always process messages; the LLM determines appropriateness to respond using intent classifier
-                let profile_key = envelope.source_number.clone().unwrap_or(source.clone());
-                let source_name = envelope.source_name.clone();
+                let user_id = envelope.source_number.clone().unwrap_or(source.clone());
+                let profile_key = if let Some(ref gid) = group_id {
+                    format!("{}:{}", gid, user_id)
+                } else {
+                    user_id.clone()
+                };
+                let source_name = envelope
+                    .source_name
+                    .clone()
+                    .or_else(|| envelope.source_number.clone())
+                    .or_else(|| Some(source.clone()));
 
                 // Prepend Thread Context if quoting someone else
                 let mut final_prompt = text.clone();
@@ -194,7 +203,7 @@ impl SessionManager {
                         .unwrap_or("");
                     if !author_str.is_empty() && author_str != self.bot_number {
                         // User is replying to someone else, but triggered Piotr
-                        let author_name = if author_str == profile_key {
+                        let author_name = if author_str == user_id {
                             "themselves"
                         } else {
                             author_str
@@ -230,11 +239,12 @@ impl SessionManager {
                 if target_author == self.bot_number {
                     if let Some(target_sent_ts) = reaction.target_sent_timestamp {
                         // Check if we have the message context
-                        if let Some((prompt, response)) = self
+                        if let Some((context_key, prompt, response)) = self
                             .state
                             .get_sent_message(target_sent_ts)
                             .await
                         {
+                            let context_key_clone = context_key.clone();
                             let prompt_clone = prompt.clone();
                             let response_clone = response.clone();
                             let emoji_clone = reaction.emoji.clone().unwrap_or_default();
@@ -242,7 +252,10 @@ impl SessionManager {
                             let memory_clone = self.memory.clone();
 
                             tokio::spawn(async move {
-                                info!("Analyzing reaction {} for prompt", emoji_clone);
+                                info!(
+                                    "Analyzing reaction {} for prompt in {}",
+                                    emoji_clone, context_key_clone
+                                );
                                 match ai_client_clone
                                     .analyze_reaction(&prompt_clone, &response_clone, &emoji_clone)
                                     .await
@@ -250,7 +263,12 @@ impl SessionManager {
                                     Ok(analysis) => {
                                         info!("Reaction Analysis: {:?}", analysis);
                                         if let Err(e) = memory_clone
-                                            .add_interaction(prompt_clone, response_clone, analysis)
+                                            .add_interaction(
+                                                &context_key_clone,
+                                                prompt_clone,
+                                                response_clone,
+                                                analysis,
+                                            )
                                             .await
                                         {
                                             error!("Failed to save interaction: {:?}", e);
@@ -475,11 +493,11 @@ impl SessionManager {
         }
 
         if override_model.is_none() {
-            // Retrieve relevant examples (simple latest/best for now)
-            let examples = self.memory.get_relevant_examples("", 3).await;
+            // Retrieve relevant examples for THIS chat only (strictly isolated per context_key)
+            let examples = self.memory.get_relevant_examples(context_key, "", 3).await;
             if !examples.is_empty() {
                 let mut examples_text = String::from(
-                    "Here are some examples of your best past responses that people liked:\n",
+                    "Here are some examples of your best past responses in this chat that people liked:\n",
                 );
                 for ex in examples {
                     examples_text
@@ -807,6 +825,7 @@ impl SessionManager {
                                             state_seq
                                                 .insert_sent_message(
                                                     ts,
+                                                    context_key_seq.clone(),
                                                     request.prompt.clone(),
                                                     trimmed.to_string(),
                                                 )
@@ -850,6 +869,7 @@ impl SessionManager {
                                             state_seq
                                                 .insert_sent_message(
                                                     ts,
+                                                    context_key_seq.clone(),
                                                     request.prompt.clone(),
                                                     trimmed.to_string(),
                                                 )
@@ -1051,5 +1071,30 @@ mod tests {
 
         // Case: Pruning exactly what's needed for the limit
         assert_eq!(SessionManager::calculate_prune_amount(5, 5000, 1000), 4);
+    }
+
+    #[test]
+    fn test_profile_key_group_isolation() {
+        let user_id = "+15551234567";
+        let group_a = "group_alpha_id";
+        let group_b = "group_beta_id";
+
+        // In group chats, profile keys are scoped to the group
+        let profile_key_a = format!("{}:{}", group_a, user_id);
+        let profile_key_b = format!("{}:{}", group_b, user_id);
+        let profile_key_dm = user_id.to_string();
+
+        assert_ne!(profile_key_a, profile_key_b);
+        assert_ne!(profile_key_a, profile_key_dm);
+        assert_ne!(profile_key_b, profile_key_dm);
+
+        // Hashed profile IDs stored in DB are also completely isolated
+        let id_a = DbProfileManager::get_profile_id(&profile_key_a);
+        let id_b = DbProfileManager::get_profile_id(&profile_key_b);
+        let id_dm = DbProfileManager::get_profile_id(&profile_key_dm);
+
+        assert_ne!(id_a, id_b);
+        assert_ne!(id_a, id_dm);
+        assert_ne!(id_b, id_dm);
     }
 }

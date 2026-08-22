@@ -13,6 +13,8 @@ use tokio::sync::Mutex;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Interaction {
+    #[serde(default)]
+    pub context_key: String,
     pub prompt: String,
     pub response: String,
     pub analysis: ReactionAnalysis,
@@ -41,6 +43,7 @@ impl Memory {
 
     pub async fn add_interaction(
         &self,
+        context_key: &str,
         prompt: String,
         response: String,
         analysis: ReactionAnalysis,
@@ -53,12 +56,13 @@ impl Memory {
 
         if let Some(existing) = guard
             .iter_mut()
-            .find(|i| i.prompt == prompt && i.response == response)
+            .find(|i| i.context_key == context_key && i.prompt == prompt && i.response == response)
         {
             existing.analysis = analysis;
             existing.timestamp = timestamp;
         } else {
             guard.push(Interaction {
+                context_key: context_key.to_string(),
                 prompt,
                 response,
                 analysis,
@@ -70,10 +74,19 @@ impl Memory {
         Ok(())
     }
 
-    pub async fn get_relevant_examples(&self, _query: &str, limit: usize) -> Vec<Interaction> {
+    pub async fn get_relevant_examples(
+        &self,
+        context_key: &str,
+        _query: &str,
+        limit: usize,
+    ) -> Vec<Interaction> {
         let guard = self.interactions.lock().await;
-        // For now, just return the highest rated recent ones
-        let mut sorted: Vec<Interaction> = guard.clone();
+        // Filter strictly by context_key to isolate memories per chat
+        let mut sorted: Vec<Interaction> = guard
+            .iter()
+            .filter(|i| i.context_key == context_key)
+            .cloned()
+            .collect();
         sorted.sort_by(|a, b| {
             b.analysis
                 .sentiment_score
@@ -329,6 +342,7 @@ impl DbProfileManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::RngExt;
 
     #[test]
     fn test_profile_id_generation() {
@@ -350,6 +364,7 @@ mod tests {
     #[test]
     fn test_memory_interaction_sorting() {
         let i1 = Interaction {
+            context_key: "chat1".to_string(),
             prompt: "1".to_string(),
             response: "1".to_string(),
             analysis: ReactionAnalysis {
@@ -360,6 +375,7 @@ mod tests {
             timestamp: 1,
         };
         let i2 = Interaction {
+            context_key: "chat1".to_string(),
             prompt: "2".to_string(),
             response: "2".to_string(),
             analysis: ReactionAnalysis {
@@ -370,6 +386,7 @@ mod tests {
             timestamp: 2,
         };
         let i3 = Interaction {
+            context_key: "chat1".to_string(),
             prompt: "3".to_string(),
             response: "3".to_string(),
             analysis: ReactionAnalysis {
@@ -520,7 +537,72 @@ mod tests {
     #[tokio::test]
     async fn test_memory_invalid_file_graceful_handling() {
         let mem = Memory::new("/tmp/this_file_definitely_does_not_exist_123.json");
-        let examples = mem.get_relevant_examples("", 10).await;
+        let examples = mem.get_relevant_examples("chat1", "", 10).await;
         assert_eq!(examples.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_memory_context_isolation() {
+        let temp_file = format!("/tmp/test_memory_iso_{}.json", rand::rng().random::<u64>());
+        let mem = Memory::new(&temp_file);
+
+        let analysis_chat1 = ReactionAnalysis {
+            sentiment_score: 0.9,
+            reasoning: "Great answer in chat 1".to_string(),
+            tags: vec!["helpful".to_string()],
+        };
+        let analysis_chat2 = ReactionAnalysis {
+            sentiment_score: 0.8,
+            reasoning: "Good answer in chat 2".to_string(),
+            tags: vec!["funny".to_string()],
+        };
+
+        // Add interaction to group chat A
+        mem.add_interaction(
+            "group_a",
+            "Secret from Group A".to_string(),
+            "Answer A".to_string(),
+            analysis_chat1,
+        )
+        .await
+        .unwrap();
+
+        // Add interaction to group chat B
+        mem.add_interaction(
+            "group_b",
+            "Secret from Group B".to_string(),
+            "Answer B".to_string(),
+            analysis_chat2,
+        )
+        .await
+        .unwrap();
+
+        // Query examples for Group A: should ONLY contain Group A interaction
+        let examples_a = mem.get_relevant_examples("group_a", "", 10).await;
+        assert_eq!(examples_a.len(), 1);
+        assert_eq!(examples_a[0].prompt, "Secret from Group A");
+        assert_eq!(examples_a[0].context_key, "group_a");
+
+        // Query examples for Group B: should ONLY contain Group B interaction
+        let examples_b = mem.get_relevant_examples("group_b", "", 10).await;
+        assert_eq!(examples_b.len(), 1);
+        assert_eq!(examples_b[0].prompt, "Secret from Group B");
+        assert_eq!(examples_b[0].context_key, "group_b");
+
+        // Query examples for unknown group C: should be empty
+        let examples_c = mem.get_relevant_examples("group_c", "", 10).await;
+        assert_eq!(examples_c.len(), 0);
+
+        // Verify persistence round-trip preserves isolation
+        let reloaded_mem = Memory::new(&temp_file);
+        let reloaded_a = reloaded_mem.get_relevant_examples("group_a", "", 10).await;
+        assert_eq!(reloaded_a.len(), 1);
+        assert_eq!(reloaded_a[0].prompt, "Secret from Group A");
+
+        let reloaded_b = reloaded_mem.get_relevant_examples("group_b", "", 10).await;
+        assert_eq!(reloaded_b.len(), 1);
+        assert_eq!(reloaded_b[0].prompt, "Secret from Group B");
+
+        let _ = tokio::fs::remove_file(temp_file).await;
     }
 }

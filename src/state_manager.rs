@@ -64,12 +64,13 @@ pub enum StateCommand {
     },
     InsertSentMessage {
         timestamp: u64,
+        context_key: String,
         prompt: String,
         response: String,
     },
     GetSentMessage {
         timestamp: u64,
-        resp: oneshot::Sender<Option<(String, String)>>,
+        resp: oneshot::Sender<Option<(String, String, String)>>,
     },
 }
 
@@ -80,8 +81,8 @@ struct StateActor {
     sequencers: SequencerMap,
     sequencers_order: VecDeque<String>, // Tracks access order for LRU eviction
     model_preferences: HashMap<String, String>,
-    sent_messages: HashMap<u64, (String, String)>, // Timestamp -> (Prompt, Response)
-    sent_messages_order: VecDeque<u64>,            // Insertion order for eviction
+    sent_messages: HashMap<u64, (String, String, String)>, // Timestamp -> (ContextKey, Prompt, Response)
+    sent_messages_order: VecDeque<u64>,                    // Insertion order for eviction
     receiver: mpsc::Receiver<StateCommand>,
 }
 
@@ -268,6 +269,7 @@ impl StateActor {
                 }
                 StateCommand::InsertSentMessage {
                     timestamp,
+                    context_key,
                     prompt,
                     response,
                 } => {
@@ -277,7 +279,8 @@ impl StateActor {
                             self.sent_messages.remove(&oldest_ts);
                         }
                     }
-                    self.sent_messages.insert(timestamp, (prompt, response));
+                    self.sent_messages
+                        .insert(timestamp, (context_key, prompt, response));
                     self.sent_messages_order.push_back(timestamp);
                 }
                 StateCommand::GetSentMessage { timestamp, resp } => {
@@ -473,18 +476,25 @@ impl StateManager {
     }
 
     // --- Sent Messages Management ---
-    pub async fn insert_sent_message(&self, timestamp: u64, prompt: String, response: String) {
+    pub async fn insert_sent_message(
+        &self,
+        timestamp: u64,
+        context_key: String,
+        prompt: String,
+        response: String,
+    ) {
         let _ = self
             .sender
             .send(StateCommand::InsertSentMessage {
                 timestamp,
+                context_key,
                 prompt,
                 response,
             })
             .await;
     }
 
-    pub async fn get_sent_message(&self, timestamp: u64) -> Option<(String, String)> {
+    pub async fn get_sent_message(&self, timestamp: u64) -> Option<(String, String, String)> {
         let (resp_tx, resp_rx) = oneshot::channel();
         if self
             .sender
@@ -499,5 +509,46 @@ impl StateManager {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_sent_messages_context_tracking() {
+        let state = StateManager::new();
+
+        state
+            .insert_sent_message(
+                100,
+                "group_chat_1".to_string(),
+                "Prompt 1".to_string(),
+                "Response 1".to_string(),
+            )
+            .await;
+
+        state
+            .insert_sent_message(
+                200,
+                "group_chat_2".to_string(),
+                "Prompt 2".to_string(),
+                "Response 2".to_string(),
+            )
+            .await;
+
+        let msg1 = state.get_sent_message(100).await.unwrap();
+        assert_eq!(msg1.0, "group_chat_1");
+        assert_eq!(msg1.1, "Prompt 1");
+        assert_eq!(msg1.2, "Response 1");
+
+        let msg2 = state.get_sent_message(200).await.unwrap();
+        assert_eq!(msg2.0, "group_chat_2");
+        assert_eq!(msg2.1, "Prompt 2");
+        assert_eq!(msg2.2, "Response 2");
+
+        let non_existent = state.get_sent_message(999).await;
+        assert!(non_existent.is_none());
     }
 }
