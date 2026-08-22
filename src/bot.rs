@@ -535,6 +535,7 @@ impl SessionManager {
                     }
 
                     let response_opt;
+                    let mut typing_task_opt = None;
 
                     if !should_abort_generation {
                         // Send Read Receipt
@@ -549,7 +550,7 @@ impl SessionManager {
                         let typing_client = signal_client_seq.clone();
                         let typing_source = reply_source.clone();
                         let typing_group_id = reply_group_id.clone();
-                        let typing_task = tokio::spawn(async move {
+                        typing_task_opt = Some(tokio::spawn(async move {
                             let mut interval =
                                 tokio::time::interval(tokio::time::Duration::from_secs(10));
                             loop {
@@ -558,7 +559,7 @@ impl SessionManager {
                                     .send_typing(&typing_source, typing_group_id.as_deref())
                                     .await;
                             }
-                        });
+                        }));
 
                         let response = match intent_or_model {
                             Some(Ok(model)) => {
@@ -612,12 +613,6 @@ impl SessionManager {
                             }
                             None => BotResponse::Error(String::new()),
                         };
-
-                        typing_task.abort();
-                        // Stop typing
-                        let _ = signal_client_seq
-                            .stop_typing(&reply_source, reply_group_id.as_deref())
-                            .await;
 
                         response_opt = Some(response);
                     } else {
@@ -845,6 +840,9 @@ impl SessionManager {
                         }
 
                         // Stop typing
+                        if let Some(task) = typing_task_opt {
+                            task.abort();
+                        }
                         let _ = signal_client_seq
                             .stop_typing(&reply_source, reply_group_id.as_deref())
                             .await;

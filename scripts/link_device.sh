@@ -28,4 +28,4 @@ echo "Cleaning up container..."
 docker rm -f piotr-signal-linker >/dev/null
 
 echo "Restoring file permissions..."
-docker run --rm -v "$(pwd)/data/signal-cli:/data" alpine chown -R $(id -u):$(id -g) /data
+docker run --rm -v "$(pwd)/data/signal-cli:/data" alpine chmod -R a+rwX /data
