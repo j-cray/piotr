@@ -53,6 +53,22 @@ impl SessionManager {
 
         if let Some(data) = envelope.effective_data_message() {
             info!("Data Message (is_sync: {}): {:?}", is_sync, data);
+
+            // Send read receipt immediately for incoming (non-sync) messages
+            if !is_sync && timestamp > 0 {
+                let client = self.signal_client.clone();
+                let receipt_recipient = envelope
+                    .source_uuid
+                    .clone()
+                    .or_else(|| envelope.source_number.clone())
+                    .unwrap_or_else(|| source.clone());
+                tokio::spawn(async move {
+                    if let Err(e) = client.send_receipt(&receipt_recipient, timestamp).await {
+                        tracing::debug!("Failed to send explicit read receipt: {:?}", e);
+                    }
+                });
+            }
+
             if let Some(text) = &data.message {
                 let is_group = data.group_info.is_some();
                 let group_id = data.group_info.as_ref().map(|g| g.group_id.clone());
@@ -561,14 +577,6 @@ impl SessionManager {
                     let mut typing_task_opt = None;
 
                     if !should_abort_generation {
-                        // Send Read Receipt
-                        if let Err(e) = signal_client_seq
-                            .send_receipt(&reply_source, request.timestamp)
-                            .await
-                        {
-                            warn!("Failed to send read receipt: {:?}", e);
-                        }
-
                         // Start Typing Task
                         let typing_client = signal_client_seq.clone();
                         let typing_source = reply_source.clone();

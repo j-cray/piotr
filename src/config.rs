@@ -351,7 +351,7 @@ impl Default for AiModelsConfig {
 
 fn default_chat_model() -> ModelSettings {
     ModelSettings {
-        name: "gemini-3-pro-preview".to_string(),
+        name: "gemini-2.5-flash".to_string(),
         temperature: Some(DEFAULT_CHAT_TEMPERATURE),
         max_output_tokens: Some(DEFAULT_CHAT_MAX_OUTPUT_TOKENS),
         max_input_tokens: Some(1000000),
@@ -360,7 +360,7 @@ fn default_chat_model() -> ModelSettings {
 
 fn default_classification_model() -> ModelSettings {
     ModelSettings {
-        name: "gemini-3-flash-preview".to_string(),
+        name: "gemini-2.5-flash-lite".to_string(),
         temperature: Some(DEFAULT_CLASSIFICATION_TEMPERATURE),
         max_output_tokens: Some(DEFAULT_CLASSIFICATION_MAX_OUTPUT_TOKENS),
         max_input_tokens: Some(1000000),

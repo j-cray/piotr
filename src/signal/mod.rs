@@ -310,6 +310,7 @@ impl SignalClient {
                         .arg("--output=json")
                         .arg("jsonRpc")
                         .arg("--receive-mode=on-start")
+                        .arg("--send-read-receipts")
                         .stdin(Stdio::piped())
                         .stdout(Stdio::piped())
                         .stderr(Stdio::inherit())

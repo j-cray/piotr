@@ -934,7 +934,7 @@ mod tests {
             .count_tokens(
                 contents,
                 &crate::config::ModelSettings {
-                    name: "gemini-3-flash-preview".to_string(),
+                    name: "gemini-2.5-flash-lite".to_string(),
                     ..Default::default()
                 },
             )
