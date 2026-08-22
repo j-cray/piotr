@@ -18,6 +18,7 @@ async fn main() -> anyhow::Result<()> {
         AppConfig::load()
             .context("Failed to load configuration from config.json5 or environment variables")?,
     );
+    utils::init_anonymize_key(&config.security.anonymize_key);
 
     // Initialize Database
     let db = db::Database::new(&config.database.url).await?;
