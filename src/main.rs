@@ -117,7 +117,14 @@ pub async fn process_message_stream<F, Fut>(
     while let Some(msg) = rx.recv().await {
         if let Some(envelope) = msg.envelope {
             let source = envelope.effective_source();
-            info!("Received Signal Message from: {}", utils::anonymize(&source));
+            info!(
+                "Received Signal Message from: {} (data_msg: {}, sync_msg: {}, receipt_msg: {}, typing_msg: {})",
+                utils::anonymize(&source),
+                envelope.data_message.is_some(),
+                envelope.sync_message.is_some(),
+                envelope.receipt_message.is_some(),
+                envelope.typing_message.is_some(),
+            );
 
             let source_for_span = source.clone();
             let source_for_closure = source.clone();

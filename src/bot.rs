@@ -50,8 +50,9 @@ impl SessionManager {
         let source = envelope.effective_source();
         let timestamp = envelope.effective_timestamp();
         let is_sync = envelope.sync_message.is_some();
+        let data_opt = envelope.effective_data_message();
 
-        if let Some(data) = envelope.effective_data_message() {
+        if let Some(data) = data_opt {
             info!("Data Message (is_sync: {}): {:?}", is_sync, data);
 
             // Send read receipt immediately for incoming (non-sync) messages

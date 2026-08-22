@@ -524,7 +524,7 @@ impl SignalClient {
                         match line_res {
                             Ok(Some(line)) => {
                                 if line.trim().is_empty() { continue; }
-                                tracing::debug!("Raw Signal Line received");
+                                info!("Raw Signal Line received: {}", line);
 
                                 if let Ok(rpc) = serde_json::from_str::<JsonRpcNotification>(&line) {
                                      if rpc.method == "receive" {
