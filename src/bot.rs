@@ -133,7 +133,9 @@ impl SessionManager {
 
                 // 2. Determine if we should reply
                 let is_quote_reply = if let Some(quote) = &data.quote {
-                    quote.author == self.bot_number
+                    quote.author.as_deref() == Some(&self.bot_number)
+                        || quote.author_number.as_deref() == Some(&self.bot_number)
+                        || quote.author_uuid.as_deref() == Some(&self.bot_number)
                 } else {
                     false
                 };
@@ -183,12 +185,18 @@ impl SessionManager {
                 // Prepend Thread Context if quoting someone else
                 let mut final_prompt = text.clone();
                 if let Some(quote) = &data.quote {
-                    if quote.author != self.bot_number {
+                    let author_str = quote
+                        .author
+                        .as_deref()
+                        .or(quote.author_number.as_deref())
+                        .or(quote.author_uuid.as_deref())
+                        .unwrap_or("");
+                    if !author_str.is_empty() && author_str != self.bot_number {
                         // User is replying to someone else, but triggered Piotr
-                        let author_name = if quote.author == profile_key {
+                        let author_name = if author_str == profile_key {
                             "themselves"
                         } else {
-                            &quote.author
+                            author_str
                         };
                         final_prompt =
                             format!("(Replying to quote from {}): {}", author_name, text);
@@ -212,45 +220,52 @@ impl SessionManager {
                 .await;
             } else if let Some(reaction) = &data.reaction {
                 // Handle Reaction
-                if reaction.target_author == self.bot_number {
-                    // Check if we have the message context
-                    if let Some((prompt, response)) = self
-                        .state
-                        .get_sent_message(reaction.target_sent_timestamp)
-                        .await
-                    {
-                        let prompt_clone = prompt.clone();
-                        let response_clone = response.clone();
-                        let emoji_clone = reaction.emoji.clone();
-                        let ai_client_clone = self.ai_client.clone();
-                        let memory_clone = self.memory.clone();
+                let target_author = reaction
+                    .target_author
+                    .as_deref()
+                    .or(reaction.target_author_number.as_deref())
+                    .or(reaction.target_author_uuid.as_deref())
+                    .unwrap_or("");
+                if target_author == self.bot_number {
+                    if let Some(target_sent_ts) = reaction.target_sent_timestamp {
+                        // Check if we have the message context
+                        if let Some((prompt, response)) = self
+                            .state
+                            .get_sent_message(target_sent_ts)
+                            .await
+                        {
+                            let prompt_clone = prompt.clone();
+                            let response_clone = response.clone();
+                            let emoji_clone = reaction.emoji.clone().unwrap_or_default();
+                            let ai_client_clone = self.ai_client.clone();
+                            let memory_clone = self.memory.clone();
 
-                        // Spawn analysis task
-                        tokio::spawn(async move {
-                            info!("Analyzing reaction {} for prompt", emoji_clone);
-                            match ai_client_clone
-                                .analyze_reaction(&prompt_clone, &response_clone, &emoji_clone)
-                                .await
-                            {
-                                Ok(analysis) => {
-                                    info!("Reaction Analysis: {:?}", analysis);
-                                    if let Err(e) = memory_clone
-                                        .add_interaction(prompt_clone, response_clone, analysis)
-                                        .await
-                                    {
-                                        error!("Failed to save interaction: {:?}", e);
+                            tokio::spawn(async move {
+                                info!("Analyzing reaction {} for prompt", emoji_clone);
+                                match ai_client_clone
+                                    .analyze_reaction(&prompt_clone, &response_clone, &emoji_clone)
+                                    .await
+                                {
+                                    Ok(analysis) => {
+                                        info!("Reaction Analysis: {:?}", analysis);
+                                        if let Err(e) = memory_clone
+                                            .add_interaction(prompt_clone, response_clone, analysis)
+                                            .await
+                                        {
+                                            error!("Failed to save interaction: {:?}", e);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to analyze reaction: {:?}", e);
                                     }
                                 }
-                                Err(e) => {
-                                    error!("Failed to analyze reaction: {:?}", e);
-                                }
-                            }
-                        });
-                    } else {
-                        warn!(
-                            "Received reaction for unknown message timestamp: {}",
-                            reaction.target_sent_timestamp
-                        );
+                            });
+                        } else {
+                            warn!(
+                                "Received reaction for unknown message timestamp: {:?}",
+                                target_sent_ts
+                            );
+                        }
                     }
                 }
             }

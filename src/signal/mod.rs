@@ -64,6 +64,8 @@ pub struct Envelope {
     pub source_device: Option<u32>,
     #[serde(rename = "dataMessage")]
     pub data_message: Option<DataMessage>,
+    #[serde(rename = "editMessage")]
+    pub edit_message: Option<EditMessage>,
     #[serde(rename = "syncMessage")]
     pub sync_message: Option<SyncMessage>,
     #[serde(rename = "receiptMessage")]
@@ -86,32 +88,122 @@ impl Envelope {
         self.timestamp
             .or_else(|| self.data_message.as_ref().and_then(|d| d.timestamp))
             .or_else(|| {
-                self.sync_message
+                self.edit_message
                     .as_ref()
-                    .and_then(|s| s.sent_message.as_ref())
+                    .and_then(|e| e.data_message.as_ref())
                     .and_then(|d| d.timestamp)
+            })
+            .or_else(|| {
+                self.sync_message.as_ref().and_then(|s| {
+                    s.sent_message.as_ref().and_then(|sm| {
+                        sm.data_message
+                            .as_ref()
+                            .and_then(|d| d.timestamp)
+                            .or(sm.timestamp)
+                    })
+                })
             })
             .unwrap_or(0)
     }
 
-    pub fn effective_data_message(&self) -> Option<&DataMessage> {
-        if self.data_message.is_some() {
-            self.data_message.as_ref()
-        } else if let Some(sync) = &self.sync_message {
-            sync.sent_message.as_ref()
-        } else {
-            None
+    pub fn effective_data_message(&self) -> Option<DataMessage> {
+        if let Some(dm) = &self.data_message {
+            return Some(dm.clone());
         }
+        if let Some(em) = &self.edit_message {
+            if let Some(dm) = &em.data_message {
+                return Some(dm.clone());
+            }
+        }
+        if let Some(sync) = &self.sync_message {
+            if let Some(sm) = &sync.sent_message {
+                if let Some(dm) = &sm.data_message {
+                    let mut dm_clone = dm.clone();
+                    if dm_clone.destination.is_none() {
+                        dm_clone.destination = sm.destination.clone();
+                    }
+                    if dm_clone.destination_number.is_none() {
+                        dm_clone.destination_number = sm.destination_number.clone();
+                    }
+                    if dm_clone.destination_uuid.is_none() {
+                        dm_clone.destination_uuid = sm.destination_uuid.clone();
+                    }
+                    return Some(dm_clone);
+                } else if let Some(em) = &sm.edit_message {
+                    if let Some(dm) = &em.data_message {
+                        let mut dm_clone = dm.clone();
+                        if dm_clone.destination.is_none() {
+                            dm_clone.destination = sm.destination.clone();
+                        }
+                        if dm_clone.destination_number.is_none() {
+                            dm_clone.destination_number = sm.destination_number.clone();
+                        }
+                        if dm_clone.destination_uuid.is_none() {
+                            dm_clone.destination_uuid = sm.destination_uuid.clone();
+                        }
+                        return Some(dm_clone);
+                    }
+                } else if sm.message.is_some() || sm.reaction.is_some() {
+                    // Fallback for flattened payloads
+                    return Some(DataMessage {
+                        message: sm.message.clone(),
+                        timestamp: sm.timestamp,
+                        destination: sm.destination.clone(),
+                        destination_number: sm.destination_number.clone(),
+                        destination_uuid: sm.destination_uuid.clone(),
+                        expires_in_seconds: None,
+                        view_once: None,
+                        group_info: sm.group_info.clone(),
+                        quote: sm.quote.clone(),
+                        reaction: sm.reaction.clone(),
+                        mentions: sm.mentions.clone(),
+                        attachments: None,
+                    });
+                }
+            }
+        }
+        None
     }
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[allow(dead_code)]
+pub struct EditMessage {
+    #[serde(rename = "targetSentTimestamp")]
+    pub target_sent_timestamp: Option<u64>,
+    #[serde(rename = "dataMessage")]
+    pub data_message: Option<DataMessage>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 #[allow(dead_code)]
 pub struct SyncMessage {
     #[serde(rename = "sentMessage")]
-    pub sent_message: Option<DataMessage>,
+    pub sent_message: Option<SyncDataMessage>,
     #[serde(rename = "readMessages")]
     pub read_messages: Option<Vec<Value>>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[allow(dead_code)]
+pub struct SyncDataMessage {
+    pub destination: Option<String>,
+    #[serde(rename = "destinationNumber")]
+    pub destination_number: Option<String>,
+    #[serde(rename = "destinationUuid")]
+    pub destination_uuid: Option<String>,
+    #[serde(rename = "dataMessage")]
+    pub data_message: Option<DataMessage>,
+    #[serde(rename = "editMessage")]
+    pub edit_message: Option<EditMessage>,
+    // Optional flattened fields in case message is serialized at top level
+    pub message: Option<String>,
+    pub timestamp: Option<u64>,
+    #[serde(rename = "groupInfo")]
+    pub group_info: Option<GroupInfo>,
+    pub quote: Option<Quote>,
+    pub reaction: Option<Reaction>,
+    pub mentions: Option<Vec<Mention>>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -122,6 +214,8 @@ pub struct ReceiptMessage {
     pub is_delivery: Option<bool>,
     #[serde(rename = "isRead")]
     pub is_read: Option<bool>,
+    #[serde(rename = "isViewed")]
+    pub is_viewed: Option<bool>,
     pub timestamps: Option<Vec<u64>>,
 }
 
@@ -135,11 +229,16 @@ pub struct DataMessage {
     pub destination_number: Option<String>,
     #[serde(rename = "destinationUuid")]
     pub destination_uuid: Option<String>,
+    #[serde(rename = "expiresInSeconds")]
+    pub expires_in_seconds: Option<u32>,
+    #[serde(rename = "viewOnce")]
+    pub view_once: Option<bool>,
     #[serde(rename = "groupInfo")]
     pub group_info: Option<GroupInfo>,
     pub quote: Option<Quote>,
     pub reaction: Option<Reaction>,
     pub mentions: Option<Vec<Mention>>,
+    pub attachments: Option<Vec<Value>>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -148,28 +247,38 @@ pub struct Mention {
     pub name: Option<String>,
     pub number: Option<String>,
     pub uuid: Option<String>,
-    pub start: usize,
-    pub length: usize,
+    pub start: Option<usize>,
+    pub length: Option<usize>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 #[allow(dead_code)]
 pub struct Reaction {
-    pub emoji: String,
+    pub emoji: Option<String>,
     #[serde(rename = "targetAuthor")]
-    pub target_author: String,
+    pub target_author: Option<String>,
+    #[serde(rename = "targetAuthorNumber")]
+    pub target_author_number: Option<String>,
+    #[serde(rename = "targetAuthorUuid")]
+    pub target_author_uuid: Option<String>,
     #[serde(rename = "targetSentTimestamp")]
-    pub target_sent_timestamp: u64,
-    #[serde(rename = "isRemove")]
+    pub target_sent_timestamp: Option<u64>,
+    #[serde(rename = "isRemove", default)]
     pub is_remove: bool,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 #[allow(dead_code)]
 pub struct Quote {
-    pub id: u64,
-    pub author: String,
-    pub text: String,
+    pub id: Option<u64>,
+    pub author: Option<String>,
+    #[serde(rename = "authorNumber")]
+    pub author_number: Option<String>,
+    #[serde(rename = "authorUuid")]
+    pub author_uuid: Option<String>,
+    pub text: Option<String>,
+    pub mentions: Option<Vec<Mention>>,
+    pub attachments: Option<Vec<Value>>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -177,8 +286,11 @@ pub struct Quote {
 pub struct GroupInfo {
     #[serde(rename = "groupId")]
     pub group_id: String,
+    #[serde(rename = "groupName")]
+    pub group_name: Option<String>,
+    pub revision: Option<i32>,
     #[serde(rename = "type")]
-    pub group_type: String,
+    pub group_type: Option<String>,
 }
 
 #[derive(Clone)]
@@ -780,6 +892,47 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_nested_sync_message() {
+        let raw_json = r#"{
+            "jsonrpc": "2.0",
+            "method": "receive",
+            "params": {
+                "account": "+12506410032",
+                "envelope": {
+                    "source": "+12506410032",
+                    "sourceNumber": "+12506410032",
+                    "sourceUuid": "1f040322-4555-45b4-a35e-b1bc794ffbe3",
+                    "timestamp": 1678886400000,
+                    "syncMessage": {
+                        "sentMessage": {
+                            "destination": "+12506410032",
+                            "destinationNumber": "+12506410032",
+                            "destinationUuid": "1f040322-4555-45b4-a35e-b1bc794ffbe3",
+                            "dataMessage": {
+                                "timestamp": 1678886400000,
+                                "message": "Real nested sync message test"
+                            }
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        let parsed: Result<JsonRpcNotification, _> = serde_json::from_str(raw_json);
+        assert!(parsed.is_ok());
+
+        let notif = parsed.unwrap();
+        let envelope = notif.params.envelope.unwrap();
+        assert_eq!(envelope.effective_source(), "+12506410032");
+        assert_eq!(envelope.effective_timestamp(), 1678886400000);
+        let dm = envelope.effective_data_message();
+        assert!(dm.is_some());
+        let data = dm.unwrap();
+        assert_eq!(data.message.as_deref(), Some("Real nested sync message test"));
+        assert_eq!(data.destination.as_deref(), Some("+12506410032"));
+    }
+
+    #[test]
     fn test_parse_adversarial_quotes() {
         // Test parsing an extremely long quote/mention to ensure it doesn't panic
         let mut long_text = String::new();
@@ -822,6 +975,6 @@ mod tests {
             .unwrap()
             .quote
             .unwrap();
-        assert_eq!(quote.text.len(), 10_000);
+        assert_eq!(quote.text.as_deref().unwrap().len(), 10_000);
     }
 }
