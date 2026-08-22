@@ -132,6 +132,105 @@ pub struct ReactionAnalysis {
     pub tags: Vec<String>, // e.g. "sarcastic", "supportive", "confused"
 }
 
+/// Sanitizes conversation turns for Vertex AI / Gemini API:
+/// 1. Drops turns with no non-empty text parts.
+/// 2. Merges adjacent consecutive turns with the same role into a single Content turn with concatenated parts.
+/// 3. Drops leading model turns (Gemini conversation turns must begin with a user turn).
+/// 4. Ensures the conversation ends with a user turn:
+///    - If the last turn is a model turn and `fallback_user_prompt` is provided and non-empty, appends a user turn.
+///    - Otherwise, drops trailing model turns.
+/// 5. If `contents` is empty and `fallback_user_prompt` is provided and non-empty, creates a single user turn.
+pub fn sanitize_contents(contents: &[Content], fallback_user_prompt: Option<&str>) -> Vec<Content> {
+    let mut cleaned: Vec<Content> = Vec::new();
+
+    for c in contents {
+        let valid_parts: Vec<Part> = c
+            .parts
+            .iter()
+            .filter_map(|p| {
+                p.text.as_ref().and_then(|t| {
+                    let trimmed = t.trim();
+                    if !trimmed.is_empty() {
+                        Some(Part {
+                            text: Some(trimmed.to_string()),
+                        })
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+
+        if valid_parts.is_empty() {
+            continue;
+        }
+
+        let role = c.role.to_lowercase();
+        let role = if role == "model" {
+            "model".to_string()
+        } else {
+            "user".to_string()
+        };
+
+        if let Some(last) = cleaned.last_mut() {
+            if last.role == role {
+                last.parts.extend(valid_parts);
+                continue;
+            }
+        }
+
+        cleaned.push(Content {
+            role,
+            parts: valid_parts,
+        });
+    }
+
+    // Drop leading model turns
+    while let Some(first) = cleaned.first() {
+        if first.role == "model" {
+            cleaned.remove(0);
+        } else {
+            break;
+        }
+    }
+
+    // Handle trailing model turns
+    if let Some(last) = cleaned.last() {
+        if last.role == "model" {
+            if let Some(prompt) = fallback_user_prompt.filter(|p| !p.trim().is_empty()) {
+                cleaned.push(Content {
+                    role: "user".to_string(),
+                    parts: vec![Part {
+                        text: Some(prompt.trim().to_string()),
+                    }],
+                });
+            } else {
+                while let Some(last) = cleaned.last() {
+                    if last.role == "model" {
+                        cleaned.pop();
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // If completely empty and fallback prompt provided, initialize with user prompt
+    if cleaned.is_empty() {
+        if let Some(prompt) = fallback_user_prompt.filter(|p| !p.trim().is_empty()) {
+            cleaned.push(Content {
+                role: "user".to_string(),
+                parts: vec![Part {
+                    text: Some(prompt.trim().to_string()),
+                }],
+            });
+        }
+    }
+
+    cleaned
+}
+
 impl VertexClient {
     pub fn new(config: Arc<crate::config::AppConfig>) -> Self {
         Self {
@@ -186,19 +285,27 @@ impl VertexClient {
     pub async fn generate_content(
         &self,
         contents: Vec<Content>,
+        system_instruction: Option<&str>,
         model: &crate::config::ModelSettings,
         use_search: bool,
     ) -> Result<String> {
+        let sanitized = sanitize_contents(&contents, None);
+        if sanitized.is_empty() {
+            anyhow::bail!("Cannot generate content: empty contents after sanitization");
+        }
+
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:generateContent",
             API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, model.name
         );
 
+        let sys_prompt = system_instruction.unwrap_or(&self.config.bot.system_prompt);
+
         let mut body_json = json!({
             "systemInstruction": {
-                "parts": [{ "text": &self.config.bot.system_prompt }]
+                "parts": [{ "text": sys_prompt }]
             },
-            "contents": contents,
+            "contents": sanitized,
             "generationConfig": {
                 "temperature": model.temperature.unwrap_or(crate::config::DEFAULT_CHAT_TEMPERATURE),
                 "maxOutputTokens": model.max_output_tokens.unwrap_or(crate::config::DEFAULT_CHAT_MAX_OUTPUT_TOKENS)
@@ -852,13 +959,18 @@ Structure:
         contents: Vec<Content>,
         model: &crate::config::ModelSettings,
     ) -> Result<i32> {
+        let sanitized = sanitize_contents(&contents, None);
+        if sanitized.is_empty() {
+            return Ok(0);
+        }
+
         let url = format!(
             "{}/projects/{}/locations/{}/publishers/google/models/{}:countTokens",
             API_ENDPOINT, self.config.ai.gcp_project_id, self.config.ai.gcp_location, model.name
         );
 
         let body = json!({
-            "contents": contents
+            "contents": sanitized
         });
 
         // Simple retry for count_tokens as well, though less critical
@@ -1249,5 +1361,123 @@ mod tests {
             elapsed < Duration::from_millis(1000),
             "Should not wait excessively"
         );
+    }
+
+    #[test]
+    fn test_sanitize_contents_empty_with_fallback() {
+        let contents: Vec<Content> = vec![];
+        let sanitized = sanitize_contents(&contents, Some("Hello world"));
+        assert_eq!(sanitized.len(), 1);
+        assert_eq!(sanitized[0].role, "user");
+        assert_eq!(sanitized[0].parts[0].text.as_deref(), Some("Hello world"));
+    }
+
+    #[test]
+    fn test_sanitize_contents_empty_without_fallback() {
+        let contents: Vec<Content> = vec![];
+        let sanitized = sanitize_contents(&contents, None);
+        assert!(sanitized.is_empty());
+    }
+
+    #[test]
+    fn test_sanitize_contents_trailing_model_turn() {
+        let contents = vec![
+            Content {
+                role: "user".to_string(),
+                parts: vec![Part { text: Some("Hi".to_string()) }],
+            },
+            Content {
+                role: "model".to_string(),
+                parts: vec![Part { text: Some("Understood".to_string()) }],
+            },
+        ];
+
+        // Without fallback: trailing model turn is dropped so it ends in user turn
+        let sanitized = sanitize_contents(&contents, None);
+        assert_eq!(sanitized.len(), 1);
+        assert_eq!(sanitized[0].role, "user");
+        assert_eq!(sanitized[0].parts[0].text.as_deref(), Some("Hi"));
+
+        // With fallback: user turn is appended so conversation naturally continues
+        let sanitized_with_fallback = sanitize_contents(&contents, Some("How are you?"));
+        assert_eq!(sanitized_with_fallback.len(), 3);
+        assert_eq!(sanitized_with_fallback[0].role, "user");
+        assert_eq!(sanitized_with_fallback[1].role, "model");
+        assert_eq!(sanitized_with_fallback[2].role, "user");
+        assert_eq!(sanitized_with_fallback[2].parts[0].text.as_deref(), Some("How are you?"));
+    }
+
+    #[test]
+    fn test_sanitize_contents_leading_model_turn() {
+        let contents = vec![
+            Content {
+                role: "model".to_string(),
+                parts: vec![Part { text: Some("Hello".to_string()) }],
+            },
+            Content {
+                role: "user".to_string(),
+                parts: vec![Part { text: Some("Question".to_string()) }],
+            },
+        ];
+
+        let sanitized = sanitize_contents(&contents, None);
+        assert_eq!(sanitized.len(), 1);
+        assert_eq!(sanitized[0].role, "user");
+        assert_eq!(sanitized[0].parts[0].text.as_deref(), Some("Question"));
+    }
+
+    #[test]
+    fn test_sanitize_contents_consecutive_same_role_merged() {
+        let contents = vec![
+            Content {
+                role: "user".to_string(),
+                parts: vec![Part { text: Some("Part 1".to_string()) }],
+            },
+            Content {
+                role: "user".to_string(),
+                parts: vec![Part { text: Some("Part 2".to_string()) }],
+            },
+            Content {
+                role: "model".to_string(),
+                parts: vec![Part { text: Some("Response 1".to_string()) }],
+            },
+            Content {
+                role: "model".to_string(),
+                parts: vec![Part { text: Some("Response 2".to_string()) }],
+            },
+            Content {
+                role: "user".to_string(),
+                parts: vec![Part { text: Some("Part 3".to_string()) }],
+            },
+        ];
+
+        let sanitized = sanitize_contents(&contents, None);
+        assert_eq!(sanitized.len(), 3);
+        assert_eq!(sanitized[0].role, "user");
+        assert_eq!(sanitized[0].parts.len(), 2);
+        assert_eq!(sanitized[1].role, "model");
+        assert_eq!(sanitized[1].parts.len(), 2);
+        assert_eq!(sanitized[2].role, "user");
+        assert_eq!(sanitized[2].parts.len(), 1);
+    }
+
+    #[test]
+    fn test_sanitize_contents_empty_parts_ignored() {
+        let contents = vec![
+            Content {
+                role: "user".to_string(),
+                parts: vec![Part { text: Some("   ".to_string()) }, Part { text: None }],
+            },
+            Content {
+                role: "user".to_string(),
+                parts: vec![Part { text: Some("Actual text".to_string()) }],
+            },
+        ];
+
+        let sanitized = sanitize_contents(&contents, None);
+        assert_eq!(sanitized.len(), 1);
+        assert_eq!(sanitized[0].role, "user");
+        assert_eq!(sanitized[0].parts.len(), 1);
+        assert_eq!(sanitized[0].parts[0].text.as_deref(), Some("Actual text"));
     }
 }

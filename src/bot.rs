@@ -362,6 +362,7 @@ impl SessionManager {
         source_name: Option<String>,
         override_model: Option<String>,
         group_id: Option<String>,
+        current_prompt: &str,
     ) -> BotResponse {
         let (model_config, use_search) = if let Some(ref m) = override_model {
             (
@@ -379,11 +380,8 @@ impl SessionManager {
             (self.config.ai.models.classification.clone(), false)
         };
 
-        // Clone history to Vec for API (Snapshot)
-        let history_vec: Vec<Content> = self.state.get_history_snapshot(context_key).await;
-
-        // Inject Learned Examples if available
-        let mut final_history = Vec::new();
+        // Build comprehensive system instruction without polluting conversation turns
+        let mut system_instructions = vec![self.config.bot.system_prompt.clone()];
 
         let target_len = self.config.bot.target_message_length_chars;
         let format_instructions = if intent == "PRO" {
@@ -394,17 +392,7 @@ impl SessionManager {
                 target_len
             )
         };
-
-        final_history.push(Content {
-            role: "user".to_string(),
-            parts: vec![Part {
-                text: Some(format!("SYSTEM NOTE: {}", format_instructions)),
-            }],
-        });
-        final_history.push(Content {
-            role: "model".to_string(),
-            parts: vec![Part { text: Some("Understood. I will manage my length according to the context and user request.".to_string()) }]
-        });
+        system_instructions.push(format_instructions);
 
         // 1. Inject User Profile
         if let Ok(profile) = self
@@ -429,22 +417,7 @@ impl SessionManager {
                 ));
             }
             profile_context.push_str("\nUse this info to personalize your response. If you know their name, use it naturally. Note: In group chats, this profile only applies to the user who just messaged you.");
-
-            final_history.push(Content {
-                role: "user".to_string(),
-                parts: vec![Part {
-                    text: Some(format!("SYSTEM NOTE: {}", profile_context)),
-                }],
-            });
-            final_history.push(Content {
-                role: "model".to_string(),
-                parts: vec![Part {
-                    text: Some(
-                        "Understood. I will personalize my response based on this profile."
-                            .to_string(),
-                    ),
-                }],
-            });
+            system_instructions.push(profile_context);
         }
 
         // 2. Inject Group Profile (if applicable)
@@ -474,21 +447,7 @@ impl SessionManager {
                     ));
                 }
                 group_context.push_str("\nUse this info to understand the context of the group chat. Reference inside jokes sparingly but accurately if the context fits.");
-
-                final_history.push(Content {
-                    role: "user".to_string(),
-                    parts: vec![Part {
-                        text: Some(format!("SYSTEM NOTE: {}", group_context)),
-                    }],
-                });
-                final_history.push(Content {
-                    role: "model".to_string(),
-                    parts: vec![Part {
-                        text: Some(
-                            "Understood. I am aware of the group's vibe and history.".to_string(),
-                        ),
-                    }],
-                });
+                system_instructions.push(group_context);
             }
         }
 
@@ -503,28 +462,26 @@ impl SessionManager {
                     examples_text
                         .push_str(&format!("User: {}\nYou: {}\n---\n", ex.prompt, ex.response));
                 }
-                final_history.push(Content {
-                    role: "user".to_string(),
-                    parts: vec![Part {
-                        text: Some(examples_text),
-                    }],
-                });
-                final_history.push(Content {
-                    role: "model".to_string(),
-                    parts: vec![Part {
-                        text: Some(
-                            "Understood. I will try to be as witty and helpful as those examples."
-                                .to_string(),
-                        ),
-                    }],
-                });
+                system_instructions.push(examples_text);
             }
         }
-        final_history.extend(history_vec);
+
+        let combined_system_instruction = system_instructions.join("\n\n---\n\n");
+
+        // Clone history to Vec for API (Snapshot)
+        let history_vec: Vec<Content> = self.state.get_history_snapshot(context_key).await;
+
+        let sanitized_history =
+            crate::ai::sanitize_contents(&history_vec, Some(current_prompt));
 
         match self
             .ai_client
-            .generate_content(final_history, &model_config, use_search)
+            .generate_content(
+                sanitized_history,
+                Some(&combined_system_instruction),
+                &model_config,
+                use_search,
+            )
             .await
         {
             Ok(text) => {
@@ -647,6 +604,7 @@ impl SessionManager {
                                         request.source_name.clone(),
                                         Some(model),
                                         group_id_context.clone(),
+                                        &request.prompt,
                                     )
                                     .await
                             }
@@ -672,6 +630,7 @@ impl SessionManager {
                                             request.source_name.clone(),
                                             None,
                                             group_id_context.clone(),
+                                            &request.prompt,
                                         )
                                         .await
                                 }
