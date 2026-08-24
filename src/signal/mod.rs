@@ -706,6 +706,88 @@ impl SignalClient {
     }
 }
 
+pub fn detect_signal_phone_number(data_path: &str) -> Result<String> {
+    let base_path = std::path::Path::new(data_path);
+    let accounts_path = base_path.join("data").join("accounts.json");
+    if !accounts_path.exists() {
+        anyhow::bail!(
+            "Signal accounts file not found at {} - did you run the linking script?",
+            accounts_path.display()
+        );
+    }
+
+    let accounts_json = std::fs::read_to_string(&accounts_path).map_err(|e| {
+        anyhow::anyhow!("Failed to read accounts file {}: {}", accounts_path.display(), e)
+    })?;
+
+    let accounts_val: Value = serde_json::from_str(&accounts_json).map_err(|e| {
+        anyhow::anyhow!("accounts.json at {} is not valid JSON: {}", accounts_path.display(), e)
+    })?;
+
+    let accounts_arr = accounts_val
+        .get("accounts")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| {
+            anyhow::anyhow!("'accounts' array not found or invalid in accounts.json")
+        })?;
+
+    if accounts_arr.is_empty() {
+        anyhow::bail!("No Signal accounts found in accounts.json. Please link a device first.");
+    }
+
+    // Try to find registered accounts first by inspecting each account's data file
+    let mut registered_candidates = Vec::new();
+    let mut fallback_candidates = Vec::new();
+
+    for acc in accounts_arr {
+        let number = acc
+            .get("number")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let path = acc
+            .get("path")
+            .and_then(|v| v.as_str());
+
+        if let Some(num) = number {
+            if let Some(p) = path {
+                let account_file = base_path.join("data").join(p);
+                if account_file.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&account_file) {
+                        if let Ok(acc_data) = serde_json::from_str::<Value>(&content) {
+                            if acc_data.get("registered").and_then(|r| r.as_bool()).unwrap_or(false) {
+                                registered_candidates.push(num.clone());
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+            fallback_candidates.push(num);
+        }
+    }
+
+    if let Some(registered) = registered_candidates.last() {
+        if registered_candidates.len() > 1 {
+            warn!(
+                "Multiple registered accounts found in Signal config; using the latest: {}",
+                registered
+            );
+        }
+        return Ok(registered.clone());
+    }
+
+    if let Some(fallback) = fallback_candidates.last() {
+        warn!(
+            "No explicitly registered account detected in Signal config; falling back to account: {}",
+            fallback
+        );
+        return Ok(fallback.clone());
+    }
+
+    anyhow::bail!("Could not detect any valid phone number in accounts.json")
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -978,4 +1060,39 @@ mod tests {
             .unwrap();
         assert_eq!(quote.text.as_deref().unwrap().len(), 10_000);
     }
+
+    #[test]
+    fn test_detect_signal_phone_number_registered_priority() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        // Create accounts.json with two accounts: old one first (unregistered), new one second (registered)
+        let accounts_json = r#"{
+            "accounts": [
+                { "path": "old_acc", "number": "+12506410032" },
+                { "path": "new_acc", "number": "+16043138270" }
+            ]
+        }"#;
+        std::fs::write(data_dir.join("accounts.json"), accounts_json).unwrap();
+
+        // Create old account file as registered: false
+        let old_acc_json = r#"{ "registered": false, "number": "+12506410032" }"#;
+        std::fs::write(data_dir.join("old_acc"), old_acc_json).unwrap();
+
+        // Create new account file as registered: true
+        let new_acc_json = r#"{ "registered": true, "number": "+16043138270" }"#;
+        std::fs::write(data_dir.join("new_acc"), new_acc_json).unwrap();
+
+        let detected = detect_signal_phone_number(temp_dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(detected, "+16043138270");
+    }
+
+    #[test]
+    fn test_detect_signal_phone_number_missing_file_err() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let res = detect_signal_phone_number(temp_dir.path().to_str().unwrap());
+        assert!(res.is_err());
+    }
 }
+
