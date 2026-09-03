@@ -392,6 +392,16 @@ impl SessionManager {
         };
         system_instructions.push(format_instructions);
 
+        if use_search {
+            system_instructions.push(
+                "SEARCH & CITATION FORMATTING:
+- Never output bare or raw URLs in your text.
+- If referencing a web source in your explanation, always use a markdown hyperlink with informative, descriptive anchor text providing context on what the page covers (e.g., [SpaceX Starship Launch Details](https://...)), NEVER just a site name or domain (do NOT write 'source: wordpress.com' or '[wordpress.com](url)').
+- Do NOT append a manual 'Sources:' list at the end of your response; verified citation links will be formatted and appended automatically."
+                    .to_string(),
+            );
+        }
+
         // 1. Inject User Profile
         if let Ok(profile) = self
             .profile_manager

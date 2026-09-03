@@ -133,6 +133,8 @@ pub struct GroundingMetadata {
     pub web_search_queries: Option<Vec<String>>,
     #[serde(rename = "groundingChunks")]
     pub grounding_chunks: Option<Vec<GroundingChunk>>,
+    #[serde(rename = "groundingSupports")]
+    pub grounding_supports: Option<Vec<GroundingSupport>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -146,6 +148,236 @@ pub struct GroundingChunk {
 pub struct GroundingWeb {
     pub uri: Option<String>,
     pub title: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[allow(dead_code)]
+pub struct GroundingSupport {
+    pub segment: Option<GroundingSegment>,
+    #[serde(rename = "groundingChunkIndices")]
+    pub grounding_chunk_indices: Option<Vec<usize>>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[allow(dead_code)]
+pub struct GroundingSegment {
+    #[serde(rename = "startIndex")]
+    pub start_index: Option<usize>,
+    #[serde(rename = "endIndex")]
+    pub end_index: Option<usize>,
+    pub text: Option<String>,
+}
+
+pub fn is_generic_site_title(title: &str, url_str: &str) -> bool {
+    let t = title.trim().to_lowercase();
+    if t.is_empty() {
+        return true;
+    }
+
+    if let Ok(parsed) = reqwest::Url::parse(url_str)
+        && let Some(host) = parsed.host_str()
+    {
+        let h = host.to_lowercase();
+        let h_no_www = h.strip_prefix("www.").unwrap_or(&h);
+        if t == h || t == h_no_www {
+            return true;
+        }
+        if let Some(first_part) = h_no_www.split('.').next()
+            && t == first_part
+        {
+            return true;
+        }
+    }
+
+    if !t.contains(' ')
+        && (t.ends_with(".com")
+            || t.ends_with(".org")
+            || t.ends_with(".net")
+            || t.ends_with(".io")
+            || t.ends_with(".co")
+            || t.ends_with(".gov")
+            || t.ends_with(".edu")
+            || t.ends_with(".info"))
+    {
+        return true;
+    }
+
+    const GENERIC_NAMES: &[&str] = &[
+        "wordpress",
+        "wordpress.com",
+        "wikipedia",
+        "reddit",
+        "medium",
+        "substack",
+        "youtube",
+        "twitter",
+        "x",
+        "github",
+        "cnn",
+        "bbc",
+        "google",
+        "home",
+        "homepage",
+        "article",
+        "post",
+        "blog",
+        "news",
+        "website",
+        "source",
+        "reuters",
+        "associated press",
+        "ap news",
+    ];
+    if GENERIC_NAMES.contains(&t.as_str()) {
+        return true;
+    }
+
+    false
+}
+
+pub fn extract_slug_from_url(url_str: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url_str).ok()?;
+    let path = parsed.path().trim_matches('/');
+    if path.is_empty() {
+        return None;
+    }
+
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    for seg in segments.into_iter().rev() {
+        let cleaned = seg
+            .strip_suffix(".html")
+            .or_else(|| seg.strip_suffix(".htm"))
+            .or_else(|| seg.strip_suffix(".php"))
+            .unwrap_or(seg);
+
+        if cleaned.chars().all(|c| c.is_ascii_digit()) || cleaned.len() < 3 {
+            continue;
+        }
+
+        let with_spaces = cleaned.replace("%20", " ").replace(['-', '_', '+'], " ");
+
+        let words: Vec<&str> = with_spaces.split_whitespace().collect();
+        if words.len() == 1
+            && words[0].len() > 20
+            && words[0].chars().all(|c| c.is_ascii_hexdigit())
+        {
+            continue;
+        }
+        if words.is_empty() {
+            continue;
+        }
+
+        let title_cased = words
+            .iter()
+            .map(|w| {
+                let mut chars = w.chars();
+                match chars.next() {
+                    None => String::new(),
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        if title_cased.len() >= 3 {
+            return Some(title_cased);
+        }
+    }
+    None
+}
+
+pub fn extract_segment_context(
+    chunk_index: usize,
+    supports: Option<&[GroundingSupport]>,
+) -> Option<String> {
+    let supports = supports?;
+    for support in supports {
+        if let Some(indices) = &support.grounding_chunk_indices
+            && indices.contains(&chunk_index)
+            && let Some(seg) = &support.segment
+            && let Some(text) = &seg.text
+        {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                let first_sentence = trimmed.split('.').next().unwrap_or(trimmed).trim();
+                let clean_excerpt = if first_sentence.len() > 70 {
+                    let mut truncated = first_sentence[..70].to_string();
+                    if let Some(last_space) = truncated.rfind(' ') {
+                        truncated.truncate(last_space);
+                    }
+                    format!("{}...", truncated)
+                } else {
+                    first_sentence.to_string()
+                };
+                return Some(clean_excerpt);
+            }
+        }
+    }
+    None
+}
+
+pub fn build_source_hyperlink(
+    chunk_index: usize,
+    chunk: &GroundingChunk,
+    supports: Option<&[GroundingSupport]>,
+) -> Option<String> {
+    let web = chunk.web.as_ref()?;
+    let url = web.uri.as_deref()?.trim();
+    if url.is_empty() {
+        return None;
+    }
+
+    let raw_title = web.title.as_deref().unwrap_or("").trim();
+    let host_fallback = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .unwrap_or_else(|| "Web Source".to_string());
+
+    let site_name = if !raw_title.is_empty() {
+        raw_title
+    } else {
+        &host_fallback
+    };
+
+    let description = if !is_generic_site_title(raw_title, url) {
+        raw_title.to_string()
+    } else {
+        let slug_ctx = extract_slug_from_url(url);
+        let segment_ctx = extract_segment_context(chunk_index, supports);
+
+        match (slug_ctx, segment_ctx) {
+            (Some(slug), _) => {
+                if slug.to_lowercase().contains(&site_name.to_lowercase()) {
+                    slug
+                } else {
+                    format!("{} ({})", slug, site_name)
+                }
+            }
+            (None, Some(seg)) => {
+                format!("{} ({})", seg, site_name)
+            }
+            (None, None) => {
+                if let Ok(parsed) = reqwest::Url::parse(url) {
+                    let path = parsed.path().trim_matches('/');
+                    if !path.is_empty() {
+                        format!("{} - {}", site_name, path)
+                    } else {
+                        format!("{} Overview", site_name)
+                    }
+                } else {
+                    site_name.to_string()
+                }
+            }
+        }
+    };
+
+    let clean_desc = description
+        .replace('[', "(")
+        .replace(']', ")")
+        .replace('\n', " ")
+        .replace('\r', "");
+
+    Some(format!("• [{}]({})", clean_desc.trim(), url))
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -468,16 +700,22 @@ impl VertexClient {
                             if let Some(grounding) = &first.grounding_metadata
                                 && let Some(chunks) = &grounding.grounding_chunks
                             {
-                                let mut sources: Vec<String> = chunks
-                                    .iter()
-                                    .filter_map(|c| c.web.as_ref())
-                                    .filter_map(|w| {
-                                        let url = w.uri.as_deref()?;
-                                        let title = w.title.as_deref().unwrap_or(url);
-                                        Some(format!("• {}: {}", title, url))
-                                    })
-                                    .collect();
-                                sources.dedup();
+                                let mut seen_urls = std::collections::HashSet::new();
+                                let mut sources = Vec::new();
+                                for (idx, chunk) in chunks.iter().enumerate() {
+                                    if let Some(web) = &chunk.web
+                                        && let Some(uri) = &web.uri
+                                        && seen_urls.insert(uri.clone())
+                                        && let Some(link) = build_source_hyperlink(
+                                            idx,
+                                            chunk,
+                                            grounding.grounding_supports.as_deref(),
+                                        )
+                                    {
+                                        sources.push(link);
+                                    }
+                                }
+
                                 if !sources.is_empty() {
                                     final_text.push_str("\n\nSources:\n");
                                     final_text.push_str(&sources.join("\n"));
@@ -1348,12 +1586,61 @@ mod tests {
             "Here is the first paragraph.\n\nHere is the second paragraph."
         );
 
-        // Check grounding metadata extraction
+        // Check grounding metadata extraction and hyperlink formatting
         let grounding = candidate.grounding_metadata.as_ref().unwrap();
         let chunk = &grounding.grounding_chunks.as_ref().unwrap()[0];
         let web = chunk.web.as_ref().unwrap();
         assert_eq!(web.title.as_deref(), Some("Rust Blog"));
         assert_eq!(web.uri.as_deref(), Some("https://blog.rust-lang.org"));
+
+        // Test building hyperlink for rich title
+        let rich_chunk = GroundingChunk {
+            web: Some(GroundingWeb {
+                uri: Some("https://blog.rust-lang.org/2024/07/25/Rust-1.80.0.html".to_string()),
+                title: Some("Rust 1.80.0 Release Notes".to_string()),
+            }),
+        };
+        let link = build_source_hyperlink(0, &rich_chunk, None).unwrap();
+        assert_eq!(
+            link,
+            "• [Rust 1.80.0 Release Notes](https://blog.rust-lang.org/2024/07/25/Rust-1.80.0.html)"
+        );
+
+        // Test building hyperlink when title is just generic site ("wordpress.com")
+        let generic_chunk = GroundingChunk {
+            web: Some(GroundingWeb {
+                uri: Some(
+                    "https://myblog.wordpress.com/2024/03/15/how-to-fix-leaking-pipes/".to_string(),
+                ),
+                title: Some("wordpress.com".to_string()),
+            }),
+        };
+        let link_generic = build_source_hyperlink(0, &generic_chunk, None).unwrap();
+        assert_eq!(
+            link_generic,
+            "• [How To Fix Leaking Pipes (wordpress.com)](https://myblog.wordpress.com/2024/03/15/how-to-fix-leaking-pipes/)"
+        );
+
+        // Test building hyperlink when title is generic and slug is absent, using segment context
+        let segment_chunk = GroundingChunk {
+            web: Some(GroundingWeb {
+                uri: Some("https://news.bbc.co.uk/".to_string()),
+                title: Some("BBC".to_string()),
+            }),
+        };
+        let supports = vec![GroundingSupport {
+            segment: Some(GroundingSegment {
+                start_index: Some(0),
+                end_index: Some(30),
+                text: Some("Scientists discovered new solar activity yesterday.".to_string()),
+            }),
+            grounding_chunk_indices: Some(vec![0]),
+        }];
+        let link_seg = build_source_hyperlink(0, &segment_chunk, Some(&supports)).unwrap();
+        assert_eq!(
+            link_seg,
+            "• [Scientists discovered new solar activity yesterday (BBC)](https://news.bbc.co.uk/)"
+        );
     }
 
     #[test]
