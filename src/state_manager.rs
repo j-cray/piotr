@@ -72,6 +72,14 @@ pub enum StateCommand {
         timestamp: u64,
         resp: oneshot::Sender<Option<(String, String, String)>>,
     },
+    GetLastSearchSources {
+        context_key: String,
+        resp: oneshot::Sender<Option<Vec<String>>>,
+    },
+    SetLastSearchSources {
+        context_key: String,
+        sources: Vec<String>,
+    },
 }
 
 // The internal state holding struct running in the background task
@@ -83,6 +91,7 @@ struct StateActor {
     model_preferences: HashMap<String, String>,
     sent_messages: HashMap<u64, (String, String, String)>, // Timestamp -> (ContextKey, Prompt, Response)
     sent_messages_order: VecDeque<u64>,                    // Insertion order for eviction
+    search_sources: HashMap<String, Vec<String>>,
     receiver: mpsc::Receiver<StateCommand>,
 }
 
@@ -100,6 +109,7 @@ impl StateActor {
             model_preferences: HashMap::new(),
             sent_messages: HashMap::new(),
             sent_messages_order: VecDeque::new(),
+            search_sources: HashMap::new(),
             receiver,
         }
     }
@@ -279,6 +289,16 @@ impl StateActor {
                 StateCommand::GetSentMessage { timestamp, resp } => {
                     let msg = self.sent_messages.get(&timestamp).cloned();
                     let _ = resp.send(msg);
+                }
+                StateCommand::GetLastSearchSources { context_key, resp } => {
+                    let sources = self.search_sources.get(&context_key).cloned();
+                    let _ = resp.send(sources);
+                }
+                StateCommand::SetLastSearchSources {
+                    context_key,
+                    sources,
+                } => {
+                    self.search_sources.insert(context_key, sources);
                 }
             }
         }
@@ -509,6 +529,34 @@ impl StateManager {
             None
         }
     }
+
+    // --- Search Sources Management ---
+    pub async fn get_last_search_sources(&self, context_key: &str) -> Option<Vec<String>> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        if self
+            .sender
+            .send(StateCommand::GetLastSearchSources {
+                context_key: context_key.to_string(),
+                resp: resp_tx,
+            })
+            .await
+            .is_ok()
+        {
+            resp_rx.await.unwrap_or(None)
+        } else {
+            None
+        }
+    }
+
+    pub async fn set_last_search_sources(&self, context_key: &str, sources: Vec<String>) {
+        let _ = self
+            .sender
+            .send(StateCommand::SetLastSearchSources {
+                context_key: context_key.to_string(),
+                sources,
+            })
+            .await;
+    }
 }
 
 #[cfg(test)]
@@ -549,5 +597,23 @@ mod tests {
 
         let non_existent = state.get_sent_message(999).await;
         assert!(non_existent.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_search_sources_tracking() {
+        let state = StateManager::new();
+        assert!(state.get_last_search_sources("chat_1").await.is_none());
+
+        let sources = vec![
+            "• [Article 1](https://example.com/1)".to_string(),
+            "• [Article 2](https://example.com/2)".to_string(),
+        ];
+        state
+            .set_last_search_sources("chat_1", sources.clone())
+            .await;
+
+        let retrieved = state.get_last_search_sources("chat_1").await.unwrap();
+        assert_eq!(retrieved, sources);
+        assert!(state.get_last_search_sources("chat_2").await.is_none());
     }
 }

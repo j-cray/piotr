@@ -19,8 +19,8 @@ Analyze the user's request and output a JSON object with:
   - "IGNORE": If the user is mentioning you but clearly talking to someone else in the group chat and not expecting you to reply, or if the SYSTEM prompt instructs you to output IGNORE.
   - "IMAGE": If request asks to 'draw', 'generate', 'create', 'sketch', or 'paint' an image/picture/photo/art/robot, OR says 'generate an image', 'high quality', 'ultra realistic', '4k', or 'detailed'.
   - "PRO": If request involves complex reasoning, programming, coding, math, debugging, architecture, or deep analysis.
-  - "SEARCH": If request asks to 'search', 'google', 'find info', 'who is', 'what is', 'latest news', 'lookup', or contains 'search the web'.
-  - "FLASH": For casual chat, greetings, witty banter, or simple questions.
+  - "SEARCH": If request asks to 'search', 'google', 'find info', 'who is', 'what is', 'latest news', 'lookup', or contains 'search the web' (unless merely asking for sources or links from a previous answer).
+  - "FLASH": For casual chat, greetings, witty banter, simple questions, or asking for sources/citations from previous messages.
 - "thinking_level": Exactly one of:
   - "LOW": For casual greetings, simple banter, chitchat, trivial one-liners, simple factual questions, or IGNORE/IMAGE.
   - "MEDIUM": For web search queries, moderate explanations, or balanced conversational answers.
@@ -30,6 +30,8 @@ Examples:
 Input: 'hello' -> Output: {"intent": "FLASH", "thinking_level": "LOW"}
 Input: 'tell me a quick pun' -> Output: {"intent": "FLASH", "thinking_level": "LOW"}
 Input: 'what is the capital of France?' -> Output: {"intent": "FLASH", "thinking_level": "LOW"}
+Input: 'what were your sources for that?' -> Output: {"intent": "FLASH", "thinking_level": "LOW"}
+Input: 'can you link the sources?' -> Output: {"intent": "FLASH", "thinking_level": "LOW"}
 Input: 'search for latest SpaceX launch results' -> Output: {"intent": "SEARCH", "thinking_level": "MEDIUM"}
 Input: 'write a concurrent queue in Rust with tests' -> Output: {"intent": "PRO", "thinking_level": "HIGH"}
 Input: 'solve this math proof by induction: ...' -> Output: {"intent": "PRO", "thinking_level": "HIGH"}
@@ -52,6 +54,12 @@ impl Default for ClassificationDecision {
             thinking_level: crate::config::ThinkingLevel::Medium,
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GeneratedResponse {
+    pub text: String,
+    pub sources: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -580,7 +588,7 @@ impl VertexClient {
         model: &crate::config::ModelSettings,
         use_search: bool,
         override_thinking_level: Option<crate::config::ThinkingLevel>,
-    ) -> Result<String> {
+    ) -> Result<GeneratedResponse> {
         let sanitized = sanitize_contents(&contents, None);
         if sanitized.is_empty() {
             anyhow::bail!("Cannot generate content: empty contents after sanitization");
@@ -644,10 +652,11 @@ impl VertexClient {
                             e,
                             resp_text.len()
                         );
-                        return Ok(
-                            "I ... I don't know what happened. The wires... they crossed."
+                        return Ok(GeneratedResponse {
+                            text: "I ... I don't know what happened. The wires... they crossed."
                                 .to_string(),
-                        );
+                            sources: Vec::new(),
+                        });
                     }
                 };
 
@@ -664,10 +673,10 @@ impl VertexClient {
                             first.safety_ratings
                         );
                         if reason == "SAFETY" || reason == "RECITATION" {
-                            return Ok(format!(
-                                "I cannot answer that. Google says no ({})",
-                                reason
-                            ));
+                            return Ok(GeneratedResponse {
+                                text: format!("I cannot answer that. Google says no ({})", reason),
+                                sources: Vec::new(),
+                            });
                         }
                     }
 
@@ -694,14 +703,14 @@ impl VertexClient {
                             .collect();
 
                         if !answer_parts.is_empty() {
-                            let mut final_text = answer_parts.join("");
+                            let final_text = answer_parts.join("");
 
-                            // Append Grounding Sources if present
+                            // Collect Grounding Sources if present (do not append automatically)
+                            let mut sources = Vec::new();
                             if let Some(grounding) = &first.grounding_metadata
                                 && let Some(chunks) = &grounding.grounding_chunks
                             {
                                 let mut seen_urls = std::collections::HashSet::new();
-                                let mut sources = Vec::new();
                                 for (idx, chunk) in chunks.iter().enumerate() {
                                     if let Some(web) = &chunk.web
                                         && let Some(uri) = &web.uri
@@ -715,21 +724,22 @@ impl VertexClient {
                                         sources.push(link);
                                     }
                                 }
-
-                                if !sources.is_empty() {
-                                    final_text.push_str("\n\nSources:\n");
-                                    final_text.push_str(&sources.join("\n"));
-                                }
                             }
 
-                            return Ok(final_text);
+                            return Ok(GeneratedResponse {
+                                text: final_text,
+                                sources,
+                            });
                         }
                     }
                 }
 
                 // Fallback if structure is oddly empty even with success
                 tracing::warn!("Vertex AI returned success but no content found.");
-                return Ok("I have nothing to say about that.".to_string());
+                return Ok(GeneratedResponse {
+                    text: "I have nothing to say about that.".to_string(),
+                    sources: Vec::new(),
+                });
             } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
                 retries += 1;
                 if retries > 3 {
@@ -748,7 +758,10 @@ impl VertexClient {
                 let error_text = resp.text().await?;
                 // Check if it's a 400 with safety block
                 if status == StatusCode::BAD_REQUEST && error_text.contains("SAFETY") {
-                    return Ok("That's ... a bit too risky for me.".to_string());
+                    return Ok(GeneratedResponse {
+                        text: "That's ... a bit too risky for me.".to_string(),
+                        sources: Vec::new(),
+                    });
                 }
                 anyhow::bail!("Vertex AI Error: {} - {}", status, error_text);
             }

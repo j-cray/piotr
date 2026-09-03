@@ -395,11 +395,24 @@ impl SessionManager {
         if use_search {
             system_instructions.push(
                 "SEARCH & CITATION FORMATTING:
-- Never output bare or raw URLs in your text.
-- If referencing a web source in your explanation, always use a markdown hyperlink with informative, descriptive anchor text providing context on what the page covers (e.g., [SpaceX Starship Launch Details](https://...)), NEVER just a site name or domain (do NOT write 'source: wordpress.com' or '[wordpress.com](url)').
-- Do NOT append a manual 'Sources:' list at the end of your response; verified citation links will be formatted and appended automatically."
+- By default, do NOT append a citations or sources list to your answer.
+- Only provide sources/links if the user explicitly requested sources, citations, references, or links in their request.
+- When providing sources, always format them as descriptive markdown hyperlinks: [Descriptive Title or Context](URL).
+- Never output bare, raw URLs."
                     .to_string(),
             );
+        }
+
+        if let Some(recent_sources) = self.state.get_last_search_sources(context_key).await
+            && !recent_sources.is_empty()
+        {
+            system_instructions.push(format!(
+                "PREVIOUS SEARCH SOURCES:\n{}\n\
+                INSTRUCTION: The above list contains the sources from the most recent search in this chat.\n\
+                - Do NOT mention or list these sources unless the user explicitly asks for sources, citations, references, links, or where you got your information.\n\
+                - If the user asks for sources, provide them as markdown hyperlinks exactly as formatted above.",
+                recent_sources.join("\n")
+            ));
         }
 
         // 1. Inject User Profile
@@ -492,9 +505,18 @@ impl SessionManager {
             )
             .await
         {
-            Ok(text) => {
-                info!("AI Response generated (len: {})", text.len());
-                BotResponse::Text(text)
+            Ok(output) => {
+                info!(
+                    "AI Response generated (len: {}, sources: {})",
+                    output.text.len(),
+                    output.sources.len()
+                );
+                if !output.sources.is_empty() {
+                    self.state
+                        .set_last_search_sources(context_key, output.sources)
+                        .await;
+                }
+                BotResponse::Text(output.text)
             }
             Err(e) => {
                 error!("AI Error: {:?}", e);
