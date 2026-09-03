@@ -366,7 +366,7 @@ fn default_classification_model() -> ModelSettings {
         temperature: Some(DEFAULT_CLASSIFICATION_TEMPERATURE),
         max_output_tokens: Some(DEFAULT_CLASSIFICATION_MAX_OUTPUT_TOKENS),
         max_input_tokens: Some(1000000),
-        thinking_level: Some(ThinkingLevel::Minimal),
+        thinking_level: Some(ThinkingLevel::Low),
         include_thoughts: Some(false),
     }
 }
@@ -385,7 +385,7 @@ fn default_imagen_model() -> ModelSettings {
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ThinkingLevel {
-    Minimal,
+    #[serde(alias = "MINIMAL", alias = "minimal")]
     Low,
     #[default]
     Medium,
@@ -395,7 +395,6 @@ pub enum ThinkingLevel {
 impl std::fmt::Display for ThinkingLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Minimal => write!(f, "MINIMAL"),
             Self::Low => write!(f, "LOW"),
             Self::Medium => write!(f, "MEDIUM"),
             Self::High => write!(f, "HIGH"),

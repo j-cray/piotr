@@ -22,20 +22,19 @@ Analyze the user's request and output a JSON object with:
   - "SEARCH": If request asks to 'search', 'google', 'find info', 'who is', 'what is', 'latest news', 'lookup', or contains 'search the web'.
   - "FLASH": For casual chat, greetings, witty banter, or simple questions.
 - "thinking_level": Exactly one of:
-  - "MINIMAL": For casual greetings, simple banter, chitchat, trivial one-liners, or IGNORE/IMAGE.
-  - "LOW": For simple factual questions or straightforward answers requiring light reasoning.
+  - "LOW": For casual greetings, simple banter, chitchat, trivial one-liners, simple factual questions, or IGNORE/IMAGE.
   - "MEDIUM": For web search queries, moderate explanations, or balanced conversational answers.
   - "HIGH": For complex logic, math, multi-step problem solving, programming, architecture, or intricate advice.
 
 Examples:
-Input: 'hello' -> Output: {"intent": "FLASH", "thinking_level": "MINIMAL"}
-Input: 'tell me a quick pun' -> Output: {"intent": "FLASH", "thinking_level": "MINIMAL"}
+Input: 'hello' -> Output: {"intent": "FLASH", "thinking_level": "LOW"}
+Input: 'tell me a quick pun' -> Output: {"intent": "FLASH", "thinking_level": "LOW"}
 Input: 'what is the capital of France?' -> Output: {"intent": "FLASH", "thinking_level": "LOW"}
 Input: 'search for latest SpaceX launch results' -> Output: {"intent": "SEARCH", "thinking_level": "MEDIUM"}
 Input: 'write a concurrent queue in Rust with tests' -> Output: {"intent": "PRO", "thinking_level": "HIGH"}
 Input: 'solve this math proof by induction: ...' -> Output: {"intent": "PRO", "thinking_level": "HIGH"}
-Input: 'generate an image of a cybernetic owl' -> Output: {"intent": "IMAGE", "thinking_level": "MINIMAL"}
-Input: 'I think @Piotr is broken' -> Output: {"intent": "IGNORE", "thinking_level": "MINIMAL"}
+Input: 'generate an image of a cybernetic owl' -> Output: {"intent": "IMAGE", "thinking_level": "LOW"}
+Input: 'I think @Piotr is broken' -> Output: {"intent": "IGNORE", "thinking_level": "LOW"}
 
 Output ONLY valid JSON."#;
 
@@ -624,13 +623,13 @@ impl VertexClient {
                         },
                         "thinking_level": {
                             "type": "STRING",
-                            "enum": ["MINIMAL", "LOW", "MEDIUM", "HIGH"]
+                            "enum": ["LOW", "MEDIUM", "HIGH"]
                         }
                     },
                     "required": ["intent", "thinking_level"]
                 },
                 "thinkingConfig": {
-                    "thinkingLevel": "MINIMAL"
+                    "thinkingLevel": "LOW"
                 }
             }
         });
@@ -686,8 +685,7 @@ impl VertexClient {
                             .trim()
                             .to_uppercase();
                         let thinking_level = match level_str.as_str() {
-                            "MINIMAL" => crate::config::ThinkingLevel::Minimal,
-                            "LOW" => crate::config::ThinkingLevel::Low,
+                            "MINIMAL" | "LOW" => crate::config::ThinkingLevel::Low,
                             "HIGH" => crate::config::ThinkingLevel::High,
                             _ => crate::config::ThinkingLevel::Medium,
                         };
@@ -770,7 +768,7 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
                 "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(crate::config::DEFAULT_REACTION_ANALYSIS_MAX_OUTPUT_TOKENS),
                 "responseMimeType": "application/json",
                 "thinkingConfig": {
-                    "thinkingLevel": "MINIMAL"
+                    "thinkingLevel": "LOW"
                 }
             }
         });
@@ -910,7 +908,7 @@ Structure:
                 "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(crate::config::DEFAULT_PROFILE_UPDATE_MAX_OUTPUT_TOKENS),
                 "responseMimeType": "application/json",
                 "thinkingConfig": {
-                    "thinkingLevel": "MINIMAL"
+                    "thinkingLevel": "LOW"
                 }
             }
         });
@@ -1047,7 +1045,7 @@ Structure:
                 "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(crate::config::DEFAULT_GROUP_PROFILE_UPDATE_MAX_OUTPUT_TOKENS),
                 "responseMimeType": "application/json",
                 "thinkingConfig": {
-                    "thinkingLevel": "MINIMAL"
+                    "thinkingLevel": "LOW"
                 }
             }
         });
@@ -1281,7 +1279,15 @@ mod tests {
         assert_eq!(decision_flash.intent, "FLASH");
         assert_eq!(
             decision_flash.thinking_level,
-            crate::config::ThinkingLevel::Minimal
+            crate::config::ThinkingLevel::Low
+        );
+
+        let json_str_low = r#"{"intent": "FLASH", "thinking_level": "LOW"}"#;
+        let decision_low: ClassificationDecision = serde_json::from_str(json_str_low).unwrap();
+        assert_eq!(decision_low.intent, "FLASH");
+        assert_eq!(
+            decision_low.thinking_level,
+            crate::config::ThinkingLevel::Low
         );
     }
 
