@@ -123,9 +123,7 @@ impl SessionManager {
                 // 1. Add User Message to History
                 let user_content = Content {
                     role: "user".to_string(),
-                    parts: vec![Part {
-                        text: Some(history_text),
-                    }],
+                    parts: vec![Part::text(history_text)],
                 };
                 self.state
                     .add_user_message(&context_key, user_content)
@@ -358,6 +356,7 @@ impl SessionManager {
     async fn generate_text_response(
         &self,
         intent: &str,
+        thinking_level: crate::config::ThinkingLevel,
         context_key: &str,
         profile_key: &str,
         source_name: Option<String>,
@@ -369,16 +368,17 @@ impl SessionManager {
             (
                 crate::config::ModelSettings {
                     name: m.clone(),
+                    thinking_level: Some(thinking_level),
                     ..Default::default()
                 },
                 false,
             ) // Disable search by default for overrides
-        } else if intent == "SEARCH" {
-            (self.config.ai.models.classification.clone(), true)
-        } else if intent == "PRO" {
-            (self.config.ai.models.chat.clone(), false)
         } else {
-            (self.config.ai.models.classification.clone(), false)
+            // Unified model: Always use chat model (gemini-3.8-flash) for all text responses
+            (
+                self.config.ai.models.chat.clone(),
+                intent == "SEARCH",
+            )
         };
 
         // Build comprehensive system instruction without polluting conversation turns
@@ -481,6 +481,7 @@ impl SessionManager {
                 Some(&combined_system_instruction),
                 &model_config,
                 use_search,
+                Some(thinking_level),
             )
             .await
         {
@@ -548,19 +549,22 @@ impl SessionManager {
                             )
                         };
 
-                        let intent = match ai_client_seq.classify_intent(&prompt_to_test).await {
-                            Ok(i) => i,
+                        let decision = match ai_client_seq.classify_intent(&prompt_to_test).await {
+                            Ok(d) => d,
                             Err(e) => {
                                 error!("Intent classification failed: {:?}", e);
-                                "FLASH".to_string()
+                                crate::ai::ClassificationDecision::default()
                             }
                         };
-                        info!("Classified intent: {}", intent);
+                        info!(
+                            "Classified intent: {} (thinking: {:?})",
+                            decision.intent, decision.thinking_level
+                        );
 
-                        if intent == "IGNORE" {
+                        if decision.intent == "IGNORE" {
                             should_abort_generation = true;
                         } else {
-                            intent_or_model = Some(Err(intent));
+                            intent_or_model = Some(Err(decision));
                         }
                     }
 
@@ -599,6 +603,7 @@ impl SessionManager {
                                 self_clone_seq
                                     .generate_text_response(
                                         "OVERRIDE",
+                                        crate::config::ThinkingLevel::Medium,
                                         &context_key_seq,
                                         &request.profile_key,
                                         request.source_name.clone(),
@@ -608,23 +613,20 @@ impl SessionManager {
                                     )
                                     .await
                             }
-                            Some(Err(intent)) => {
-                                if intent.starts_with("IMAGE") {
+                            Some(Err(decision)) => {
+                                if decision.intent.starts_with("IMAGE") {
                                     self_clone_seq
                                         .generate_image_response(&request.prompt)
                                         .await
                                 } else {
-                                    let model_cfg = if intent == "PRO" {
-                                        &self_clone_seq.config.ai.models.chat
-                                    } else {
-                                        &self_clone_seq.config.ai.models.classification
-                                    };
+                                    let model_cfg = &self_clone_seq.config.ai.models.chat;
                                     self_clone_seq
                                         .manage_context_window(&context_key_seq, model_cfg)
                                         .await;
                                     self_clone_seq
                                         .generate_text_response(
-                                            &intent,
+                                            &decision.intent,
+                                            decision.thinking_level,
                                             &context_key_seq,
                                             &request.profile_key,
                                             request.source_name.clone(),
@@ -732,9 +734,7 @@ impl SessionManager {
                                 // Update History with Model Response
                                 let model_content = Content {
                                     role: "model".to_string(),
-                                    parts: vec![Part {
-                                        text: Some(text.clone()),
-                                    }],
+                                    parts: vec![Part::text(text.clone())],
                                 };
                                 state_seq
                                     .add_model_message(&context_key_seq, model_content)

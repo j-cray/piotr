@@ -13,25 +13,47 @@ use tokio::sync::OnceCell;
 // Correct global endpoint base URL
 const API_ENDPOINT: &str = "https://aiplatform.googleapis.com/v1";
 
-const CLASSIFICATION_INSTRUCTION: &str = r#"You are a classification router. Analyze the user's request and categorize it into one of these exact keywords:
-- IGNORE: If the user is mentioning you but clearly talking to someone else in the group chat and not expecting you to reply, or if the SYSTEM prompt instructs you to output IGNORE.
-- IMAGE: If request asks to 'draw', 'generate', 'create', 'sketch', or 'paint' an image/picture/photo/art/robot, OR specifically says 'generate an image', 'high quality', 'ultra realistic', '4k', or 'detailed'.
-- PRO: If request involves complex reasoning, coding, math, or analysis.
-- SEARCH: If request asks to 'search', 'google', 'find info', 'who is', 'what is', 'latest news', 'lookup', or contains 'search the web'.
-- FLASH: For casual chat, greetings, or simple questions.
+const CLASSIFICATION_INSTRUCTION: &str = r#"You are an intent and reasoning classifier for a chat bot.
+Analyze the user's request and output a JSON object with:
+- "intent": Exactly one of:
+  - "IGNORE": If the user is mentioning you but clearly talking to someone else in the group chat and not expecting you to reply, or if the SYSTEM prompt instructs you to output IGNORE.
+  - "IMAGE": If request asks to 'draw', 'generate', 'create', 'sketch', or 'paint' an image/picture/photo/art/robot, OR says 'generate an image', 'high quality', 'ultra realistic', '4k', or 'detailed'.
+  - "PRO": If request involves complex reasoning, programming, coding, math, debugging, architecture, or deep analysis.
+  - "SEARCH": If request asks to 'search', 'google', 'find info', 'who is', 'what is', 'latest news', 'lookup', or contains 'search the web'.
+  - "FLASH": For casual chat, greetings, witty banter, or simple questions.
+- "thinking_level": Exactly one of:
+  - "MINIMAL": For casual greetings, simple banter, chitchat, trivial one-liners, or IGNORE/IMAGE.
+  - "LOW": For simple factual questions or straightforward answers requiring light reasoning.
+  - "MEDIUM": For web search queries, moderate explanations, or balanced conversational answers.
+  - "HIGH": For complex logic, math, multi-step problem solving, programming, architecture, or intricate advice.
 
-Input: 'draw a cat' -> Output: IMAGE
-Input: 'generate an image of a dog' -> Output: IMAGE
-Input: 'sketch a robot' -> Output: IMAGE
-Input: 'search for rust release' -> Output: SEARCH
-Input: 'google who won the super bowl' -> Output: SEARCH
-Input: 'find info on mars' -> Output: SEARCH
-Input: 'search the web for olympics' -> Output: SEARCH
-Input: 'hello' -> Output: FLASH
-Input: 'code a snake game' -> Output: PRO
-Input: 'I think @Piotr is broken' -> Output: IGNORE
+Examples:
+Input: 'hello' -> Output: {"intent": "FLASH", "thinking_level": "MINIMAL"}
+Input: 'tell me a quick pun' -> Output: {"intent": "FLASH", "thinking_level": "MINIMAL"}
+Input: 'what is the capital of France?' -> Output: {"intent": "FLASH", "thinking_level": "LOW"}
+Input: 'search for latest SpaceX launch results' -> Output: {"intent": "SEARCH", "thinking_level": "MEDIUM"}
+Input: 'write a concurrent queue in Rust with tests' -> Output: {"intent": "PRO", "thinking_level": "HIGH"}
+Input: 'solve this math proof by induction: ...' -> Output: {"intent": "PRO", "thinking_level": "HIGH"}
+Input: 'generate an image of a cybernetic owl' -> Output: {"intent": "IMAGE", "thinking_level": "MINIMAL"}
+Input: 'I think @Piotr is broken' -> Output: {"intent": "IGNORE", "thinking_level": "MINIMAL"}
 
-Output ONLY the single keyword."#;
+Output ONLY valid JSON."#;
+
+#[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
+pub struct ClassificationDecision {
+    pub intent: String,
+    #[serde(rename = "thinking_level")]
+    pub thinking_level: crate::config::ThinkingLevel,
+}
+
+impl Default for ClassificationDecision {
+    fn default() -> Self {
+        Self {
+            intent: "FLASH".to_string(),
+            thinking_level: crate::config::ThinkingLevel::Medium,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct VertexClient {
@@ -92,6 +114,39 @@ pub struct Content {
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 pub struct Part {
     pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thought: Option<bool>,
+}
+
+impl Part {
+    pub fn text(t: impl Into<String>) -> Self {
+        Self {
+            text: Some(t.into()),
+            thought: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[allow(dead_code)]
+pub struct GroundingMetadata {
+    #[serde(rename = "webSearchQueries")]
+    pub web_search_queries: Option<Vec<String>>,
+    #[serde(rename = "groundingChunks")]
+    pub grounding_chunks: Option<Vec<GroundingChunk>>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[allow(dead_code)]
+pub struct GroundingChunk {
+    pub web: Option<GroundingWeb>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[allow(dead_code)]
+pub struct GroundingWeb {
+    pub uri: Option<String>,
+    pub title: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -112,6 +167,8 @@ struct Candidate {
     safety_ratings: Option<Vec<SafetyRating>>,
     #[serde(rename = "citationMetadata")]
     citation_metadata: Option<serde_json::Value>,
+    #[serde(rename = "groundingMetadata")]
+    grounding_metadata: Option<GroundingMetadata>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -159,6 +216,7 @@ pub fn sanitize_contents(contents: &[Content], fallback_user_prompt: Option<&str
                     if !trimmed.is_empty() {
                         Some(Part {
                             text: Some(trimmed.to_string()),
+                            thought: None,
                         })
                     } else {
                         None
@@ -207,9 +265,7 @@ pub fn sanitize_contents(contents: &[Content], fallback_user_prompt: Option<&str
         if let Some(prompt) = fallback_user_prompt.filter(|p| !p.trim().is_empty()) {
             cleaned.push(Content {
                 role: "user".to_string(),
-                parts: vec![Part {
-                    text: Some(prompt.trim().to_string()),
-                }],
+                parts: vec![Part::text(prompt.trim())],
             });
         } else {
             while let Some(last) = cleaned.last() {
@@ -228,9 +284,7 @@ pub fn sanitize_contents(contents: &[Content], fallback_user_prompt: Option<&str
     {
         cleaned.push(Content {
             role: "user".to_string(),
-            parts: vec![Part {
-                text: Some(prompt.trim().to_string()),
-            }],
+            parts: vec![Part::text(prompt.trim())],
         });
     }
 
@@ -294,6 +348,7 @@ impl VertexClient {
         system_instruction: Option<&str>,
         model: &crate::config::ModelSettings,
         use_search: bool,
+        override_thinking_level: Option<crate::config::ThinkingLevel>,
     ) -> Result<String> {
         let sanitized = sanitize_contents(&contents, None);
         if sanitized.is_empty() {
@@ -307,15 +362,25 @@ impl VertexClient {
 
         let sys_prompt = system_instruction.unwrap_or(&self.config.bot.system_prompt);
 
+        let effective_thinking_level = override_thinking_level.or(model.thinking_level);
+        let mut gen_config = json!({
+            "temperature": model.temperature.unwrap_or(crate::config::DEFAULT_CHAT_TEMPERATURE),
+            "maxOutputTokens": model.max_output_tokens.unwrap_or(crate::config::DEFAULT_CHAT_MAX_OUTPUT_TOKENS),
+        });
+
+        if let Some(level) = effective_thinking_level {
+            gen_config["thinkingConfig"] = json!({
+                "thinkingLevel": level.to_string(),
+                "includeThoughts": model.include_thoughts.unwrap_or(true),
+            });
+        }
+
         let mut body_json = json!({
             "systemInstruction": {
                 "parts": [{ "text": sys_prompt }]
             },
             "contents": sanitized,
-            "generationConfig": {
-                "temperature": model.temperature.unwrap_or(crate::config::DEFAULT_CHAT_TEMPERATURE),
-                "maxOutputTokens": model.max_output_tokens.unwrap_or(crate::config::DEFAULT_CHAT_MAX_OUTPUT_TOKENS)
-            }
+            "generationConfig": gen_config,
         });
 
         if use_search && let Some(obj) = body_json.as_object_mut() {
@@ -375,11 +440,49 @@ impl VertexClient {
                         }
                     }
 
-                    if let Some(content) = &first.content
-                        && let Some(parts) = &content.parts.first()
-                        && let Some(text) = &parts.text
-                    {
-                        return Ok(text.to_string());
+                    if let Some(content) = &first.content {
+                        // Log thought parts for tracing/observability
+                        for (idx, p) in content.parts.iter().enumerate() {
+                            if p.thought == Some(true) {
+                                if let Some(thought_text) = &p.text {
+                                    tracing::debug!("Reasoning thought [part {}]: {}", idx, thought_text);
+                                }
+                            }
+                        }
+
+                        // Collect only non-thought answer parts
+                        let answer_parts: Vec<&str> = content
+                            .parts
+                            .iter()
+                            .filter(|p| p.thought != Some(true))
+                            .filter_map(|p| p.text.as_deref())
+                            .collect();
+
+                        if !answer_parts.is_empty() {
+                            let mut final_text = answer_parts.join("");
+
+                            // Append Grounding Sources if present
+                            if let Some(grounding) = &first.grounding_metadata
+                                && let Some(chunks) = &grounding.grounding_chunks
+                            {
+                                let mut sources: Vec<String> = chunks
+                                    .iter()
+                                    .filter_map(|c| c.web.as_ref())
+                                    .filter_map(|w| {
+                                        let url = w.uri.as_deref()?;
+                                        let title = w.title.as_deref().unwrap_or(url);
+                                        Some(format!("• {}: {}", title, url))
+                                    })
+                                    .collect();
+                                sources.dedup();
+                                if !sources.is_empty() {
+                                    final_text.push_str("\n\nSources:\n");
+                                    final_text.push_str(&sources.join("\n"));
+                                }
+                            }
+
+                            return Ok(final_text);
+                        }
                     }
                 }
 
@@ -481,12 +584,13 @@ impl VertexClient {
         }
     }
 
-    pub async fn classify_intent(&self, prompt: &str) -> Result<String> {
+    pub async fn classify_intent(&self, prompt: &str) -> Result<ClassificationDecision> {
         tracing::info!("Classifying intent for prompt");
         let contents = vec![Content {
             role: "user".to_string(),
             parts: vec![Part {
                 text: Some(prompt.to_string()),
+                thought: None,
             }],
         }];
 
@@ -505,7 +609,25 @@ impl VertexClient {
             "contents": contents,
             "generationConfig": {
                 "temperature": self.config.ai.models.classification.temperature.unwrap_or(crate::config::DEFAULT_CLASSIFICATION_TEMPERATURE),
-                "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(crate::config::DEFAULT_CLASSIFICATION_MAX_OUTPUT_TOKENS)
+                "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(crate::config::DEFAULT_CLASSIFICATION_MAX_OUTPUT_TOKENS),
+                "responseMimeType": "application/json",
+                "responseSchema": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "intent": {
+                            "type": "STRING",
+                            "enum": ["FLASH", "SEARCH", "PRO", "IMAGE", "IGNORE"]
+                        },
+                        "thinking_level": {
+                            "type": "STRING",
+                            "enum": ["MINIMAL", "LOW", "MEDIUM", "HIGH"]
+                        }
+                    },
+                    "required": ["intent", "thinking_level"]
+                },
+                "thinkingConfig": {
+                    "thinkingLevel": "MINIMAL"
+                }
             }
         });
 
@@ -531,17 +653,52 @@ impl VertexClient {
                         .get("content")
                         .and_then(|c| c.get("parts"))
                         .and_then(|p| p.as_array())
-                    && let Some(text_part) = parts.first()
-                    && let Some(text) = text_part.get("text").and_then(|t| t.as_str())
                 {
-                    return Ok(text.trim().to_uppercase());
+                    let answer_text = parts
+                        .iter()
+                        .filter(|p| p.get("thought").and_then(|t| t.as_bool()) != Some(true))
+                        .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                        .collect::<Vec<_>>()
+                        .join("");
+
+                    if let Ok(decision) =
+                        serde_json::from_str::<ClassificationDecision>(&answer_text)
+                    {
+                        return Ok(decision);
+                    }
+
+                    // Fallback parsing in case of unexpected json formatting
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&answer_text) {
+                        let intent = val
+                            .get("intent")
+                            .and_then(|i| i.as_str())
+                            .unwrap_or("FLASH")
+                            .trim()
+                            .to_uppercase();
+                        let level_str = val
+                            .get("thinking_level")
+                            .and_then(|l| l.as_str())
+                            .unwrap_or("MEDIUM")
+                            .trim()
+                            .to_uppercase();
+                        let thinking_level = match level_str.as_str() {
+                            "MINIMAL" => crate::config::ThinkingLevel::Minimal,
+                            "LOW" => crate::config::ThinkingLevel::Low,
+                            "HIGH" => crate::config::ThinkingLevel::High,
+                            _ => crate::config::ThinkingLevel::Medium,
+                        };
+                        return Ok(ClassificationDecision {
+                            intent,
+                            thinking_level,
+                        });
+                    }
                 }
-                return Ok("FLASH".to_string());
+                return Ok(ClassificationDecision::default());
             } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
                 retries += 1;
                 if retries > 3 {
                     tracing::error!("Intent classification failed after retries: {}", status);
-                    return Ok("FLASH".to_string()); // Fail open to default
+                    return Ok(ClassificationDecision::default()); // Fail open to default
                 }
                 let wait = Duration::from_millis(500 * 2u64.pow(retries));
                 tokio::time::sleep(wait).await;
@@ -549,7 +706,7 @@ impl VertexClient {
             } else {
                 // Non-retryable error
                 tracing::error!("Intent classification failed non-retryable: {}", status);
-                return Ok("FLASH".to_string());
+                return Ok(ClassificationDecision::default());
             }
         }
     }
@@ -587,6 +744,7 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
             role: "user".to_string(),
             parts: vec![Part {
                 text: Some(user_msg),
+                thought: None,
             }],
         }];
 
@@ -606,7 +764,10 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
             "generationConfig": {
                 "temperature": self.config.ai.models.classification.temperature.unwrap_or(crate::config::DEFAULT_REACTION_ANALYSIS_TEMPERATURE), // Low temp for analysis
                 "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(crate::config::DEFAULT_REACTION_ANALYSIS_MAX_OUTPUT_TOKENS),
-                "responseMimeType": "application/json"
+                "responseMimeType": "application/json",
+                "thinkingConfig": {
+                    "thinkingLevel": "MINIMAL"
+                }
             }
         });
 
@@ -634,22 +795,27 @@ Output: { "sentiment_score": 1.0, "reasoning": "User found the joke funny.", "ta
                         .get("content")
                         .and_then(|c| c.get("parts"))
                         .and_then(|p| p.as_array())
-                    && let Some(text_part) = parts.first()
-                    && let Some(text) = text_part.get("text").and_then(|t| t.as_str())
                 {
+                    let answer_text = parts
+                        .iter()
+                        .filter(|p| p.get("thought").and_then(|t| t.as_bool()) != Some(true))
+                        .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                        .collect::<Vec<_>>()
+                        .join("");
+
                     // Parse JSON from text
-                    match serde_json::from_str::<ReactionAnalysis>(text) {
+                    match serde_json::from_str::<ReactionAnalysis>(&answer_text) {
                         Ok(analysis) => return Ok(analysis),
                         Err(e) => {
                             tracing::error!(
                                 "Failed to parse analysis JSON: {}. Text length: {}",
                                 e,
-                                text.len()
+                                answer_text.len()
                             );
                             // Fallback
                             return Ok(ReactionAnalysis {
                                 sentiment_score: 0.0,
-                                reasoning: format!("Failed to parse: {}", text),
+                                reasoning: format!("Failed to parse: {}", answer_text),
                                 tags: vec!["parse_error".to_string()],
                             });
                         }
@@ -718,6 +884,7 @@ Structure:
             role: "user".to_string(),
             parts: vec![Part {
                 text: Some(user_msg),
+                thought: None,
             }],
         }];
 
@@ -737,7 +904,10 @@ Structure:
             "generationConfig": {
                 "temperature": self.config.ai.models.classification.temperature.unwrap_or(crate::config::DEFAULT_PROFILE_UPDATE_TEMPERATURE),
                 "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(crate::config::DEFAULT_PROFILE_UPDATE_MAX_OUTPUT_TOKENS),
-                "responseMimeType": "application/json"
+                "responseMimeType": "application/json",
+                "thinkingConfig": {
+                    "thinkingLevel": "MINIMAL"
+                }
             }
         });
 
@@ -764,10 +934,15 @@ Structure:
                         .get("content")
                         .and_then(|c| c.get("parts"))
                         .and_then(|p| p.as_array())
-                    && let Some(text_part) = parts.first()
-                    && let Some(text) = text_part.get("text").and_then(|t| t.as_str())
                 {
-                    match serde_json::from_str::<crate::ai::memory::UserProfile>(text) {
+                    let answer_text = parts
+                        .iter()
+                        .filter(|p| p.get("thought").and_then(|t| t.as_bool()) != Some(true))
+                        .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                        .collect::<Vec<_>>()
+                        .join("");
+
+                    match serde_json::from_str::<crate::ai::memory::UserProfile>(&answer_text) {
                         Ok(mut profile) => {
                             // Ensure ID and timestamp are handled correctly
                             profile.id = current_profile.id.clone();
@@ -780,7 +955,7 @@ Structure:
                             tracing::error!(
                                 "Failed to parse profile update JSON: {}. Text length: {}",
                                 e,
-                                text.len()
+                                answer_text.len()
                             );
                             // Fail safe: return original
                             return Ok(current_profile.clone());
@@ -846,6 +1021,7 @@ Structure:
             role: "user".to_string(),
             parts: vec![Part {
                 text: Some(user_msg),
+                thought: None,
             }],
         }];
 
@@ -865,7 +1041,10 @@ Structure:
             "generationConfig": {
                 "temperature": self.config.ai.models.classification.temperature.unwrap_or(crate::config::DEFAULT_GROUP_PROFILE_UPDATE_TEMPERATURE), // Slightly higher than user profile for capturing "vibes"
                 "maxOutputTokens": self.config.ai.models.classification.max_output_tokens.unwrap_or(crate::config::DEFAULT_GROUP_PROFILE_UPDATE_MAX_OUTPUT_TOKENS),
-                "responseMimeType": "application/json"
+                "responseMimeType": "application/json",
+                "thinkingConfig": {
+                    "thinkingLevel": "MINIMAL"
+                }
             }
         });
 
@@ -892,10 +1071,15 @@ Structure:
                         .get("content")
                         .and_then(|c| c.get("parts"))
                         .and_then(|p| p.as_array())
-                    && let Some(text_part) = parts.first()
-                    && let Some(text) = text_part.get("text").and_then(|t| t.as_str())
                 {
-                    match serde_json::from_str::<crate::ai::memory::GroupProfile>(text) {
+                    let answer_text = parts
+                        .iter()
+                        .filter(|p| p.get("thought").and_then(|t| t.as_bool()) != Some(true))
+                        .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                        .collect::<Vec<_>>()
+                        .join("");
+
+                    match serde_json::from_str::<crate::ai::memory::GroupProfile>(&answer_text) {
                         Ok(mut profile) => {
                             // Ensure ID and timestamp are handled correctly
                             profile.id = current_profile.id.clone();
@@ -908,7 +1092,7 @@ Structure:
                             tracing::error!(
                                 "Failed to parse group profile update JSON: {}. Text length: {}",
                                 e,
-                                text.len()
+                                answer_text.len()
                             );
                             // Fail safe: return original
                             return Ok(current_profile.clone());
@@ -1018,9 +1202,7 @@ mod tests {
 
         let contents = vec![Content {
             role: "user".to_string(),
-            parts: vec![Part {
-                text: Some("Hello world".to_string()),
-            }],
+            parts: vec![Part::text("Hello world")],
         }];
 
         match client
@@ -1059,9 +1241,9 @@ mod tests {
         // Test 1: Direct invocation
         let prompt_direct = "SYSTEM: Analyze if the user is talking *to* you or just talking *about* you. Reply IGNORE if they are mentioning you in passing to someone else without expecting a response. If they are addressing you directly (e.g. just '@Piotr' or asking a question), categorize the intent normally as FLASH, SEARCH, PRO, or IMAGE. User prompt: @Piotr";
         match client.classify_intent(prompt_direct).await {
-            Ok(intent) => {
-                println!("Direct invocation intent: {}", intent);
-                assert_ne!(intent, "IGNORE");
+            Ok(decision) => {
+                println!("Direct invocation intent: {} ({:?})", decision.intent, decision.thinking_level);
+                assert_ne!(decision.intent, "IGNORE");
             }
             Err(e) => panic!("Classification failed: {:?}", e),
         }
@@ -1069,12 +1251,84 @@ mod tests {
         // Test 2: Passing mention
         let prompt_passing = "SYSTEM: Analyze if the user is talking *to* you or just talking *about* you. Reply IGNORE if they are mentioning you in passing to someone else without expecting a response. If they are addressing you directly (e.g. just '@Piotr' or asking a question), categorize the intent normally as FLASH, SEARCH, PRO, or IMAGE. User prompt: I think @Piotr is broken";
         match client.classify_intent(prompt_passing).await {
-            Ok(intent) => {
-                println!("Passing mention intent: {}", intent);
-                assert_eq!(intent, "IGNORE");
+            Ok(decision) => {
+                println!("Passing mention intent: {} ({:?})", decision.intent, decision.thinking_level);
+                assert_eq!(decision.intent, "IGNORE");
             }
             Err(e) => panic!("Classification failed: {:?}", e),
         }
+    }
+
+    #[test]
+    fn test_classification_decision_deserialization() {
+        let json_str = r#"{"intent": "PRO", "thinking_level": "HIGH"}"#;
+        let decision: ClassificationDecision = serde_json::from_str(json_str).unwrap();
+        assert_eq!(decision.intent, "PRO");
+        assert_eq!(decision.thinking_level, crate::config::ThinkingLevel::High);
+
+        let json_str_flash = r#"{"intent": "FLASH", "thinking_level": "MINIMAL"}"#;
+        let decision_flash: ClassificationDecision = serde_json::from_str(json_str_flash).unwrap();
+        assert_eq!(decision_flash.intent, "FLASH");
+        assert_eq!(decision_flash.thinking_level, crate::config::ThinkingLevel::Minimal);
+    }
+
+    #[test]
+    fn test_generate_content_with_thinking_and_grounding() {
+        let raw_json = r#"{
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [
+                            {"text": "Let me think through this query carefully...", "thought": true},
+                            {"text": "Here is the first paragraph.\n\n"},
+                            {"text": "Here is the second paragraph."}
+                        ]
+                    },
+                    "finishReason": "STOP",
+                    "groundingMetadata": {
+                        "webSearchQueries": ["rust news"],
+                        "groundingChunks": [
+                            {
+                                "web": {
+                                    "title": "Rust Blog",
+                                    "uri": "https://blog.rust-lang.org"
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }"#;
+
+        let response: GenerateContentResponse = serde_json::from_str(raw_json).unwrap();
+        let candidate = &response.candidates.unwrap()[0];
+        let content = candidate.content.as_ref().unwrap();
+
+        // Ensure thoughts are isolated
+        let thoughts: Vec<&str> = content
+            .parts
+            .iter()
+            .filter(|p| p.thought == Some(true))
+            .filter_map(|p| p.text.as_deref())
+            .collect();
+        assert_eq!(thoughts, vec!["Let me think through this query carefully..."]);
+
+        // Ensure text answers are aggregated
+        let answer_parts: Vec<&str> = content
+            .parts
+            .iter()
+            .filter(|p| p.thought != Some(true))
+            .filter_map(|p| p.text.as_deref())
+            .collect();
+        assert_eq!(answer_parts.join(""), "Here is the first paragraph.\n\nHere is the second paragraph.");
+
+        // Check grounding metadata extraction
+        let grounding = candidate.grounding_metadata.as_ref().unwrap();
+        let chunk = &grounding.grounding_chunks.as_ref().unwrap()[0];
+        let web = chunk.web.as_ref().unwrap();
+        assert_eq!(web.title.as_deref(), Some("Rust Blog"));
+        assert_eq!(web.uri.as_deref(), Some("https://blog.rust-lang.org"));
     }
 
     #[test]
@@ -1218,9 +1472,7 @@ mod tests {
         // preventing injection via malformed fields.
         let content = Content {
             role: "user".to_string(),
-            parts: vec![Part {
-                text: Some("Normal text\nwith \"quotes\" and \\slashes".to_string()),
-            }],
+            parts: vec![Part::text("Normal text\nwith \"quotes\" and \\slashes")],
         };
 
         let serialized = serde_json::to_string(&content).unwrap();
@@ -1365,15 +1617,11 @@ mod tests {
         let contents = vec![
             Content {
                 role: "user".to_string(),
-                parts: vec![Part {
-                    text: Some("Hi".to_string()),
-                }],
+                parts: vec![Part::text("Hi")],
             },
             Content {
                 role: "model".to_string(),
-                parts: vec![Part {
-                    text: Some("Understood".to_string()),
-                }],
+                parts: vec![Part::text("Understood")],
             },
         ];
 
@@ -1400,15 +1648,11 @@ mod tests {
         let contents = vec![
             Content {
                 role: "model".to_string(),
-                parts: vec![Part {
-                    text: Some("Hello".to_string()),
-                }],
+                parts: vec![Part::text("Hello")],
             },
             Content {
                 role: "user".to_string(),
-                parts: vec![Part {
-                    text: Some("Question".to_string()),
-                }],
+                parts: vec![Part::text("Question")],
             },
         ];
 
@@ -1423,33 +1667,23 @@ mod tests {
         let contents = vec![
             Content {
                 role: "user".to_string(),
-                parts: vec![Part {
-                    text: Some("Part 1".to_string()),
-                }],
+                parts: vec![Part::text("Part 1")],
             },
             Content {
                 role: "user".to_string(),
-                parts: vec![Part {
-                    text: Some("Part 2".to_string()),
-                }],
+                parts: vec![Part::text("Part 2")],
             },
             Content {
                 role: "model".to_string(),
-                parts: vec![Part {
-                    text: Some("Response 1".to_string()),
-                }],
+                parts: vec![Part::text("Response 1")],
             },
             Content {
                 role: "model".to_string(),
-                parts: vec![Part {
-                    text: Some("Response 2".to_string()),
-                }],
+                parts: vec![Part::text("Response 2")],
             },
             Content {
                 role: "user".to_string(),
-                parts: vec![Part {
-                    text: Some("Part 3".to_string()),
-                }],
+                parts: vec![Part::text("Part 3")],
             },
         ];
 
@@ -1471,15 +1705,17 @@ mod tests {
                 parts: vec![
                     Part {
                         text: Some("   ".to_string()),
+                        thought: None,
                     },
-                    Part { text: None },
+                    Part {
+                        text: None,
+                        thought: None,
+                    },
                 ],
             },
             Content {
                 role: "user".to_string(),
-                parts: vec![Part {
-                    text: Some("Actual text".to_string()),
-                }],
+                parts: vec![Part::text("Actual text")],
             },
         ];
 

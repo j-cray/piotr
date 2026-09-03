@@ -1,5 +1,5 @@
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_CHAT_TEMPERATURE: f32 = 0.5;
 pub const DEFAULT_CHAT_MAX_OUTPUT_TOKENS: i32 = 8192;
@@ -351,10 +351,12 @@ impl Default for AiModelsConfig {
 
 fn default_chat_model() -> ModelSettings {
     ModelSettings {
-        name: "gemini-2.5-flash".to_string(),
+        name: "gemini-3.8-flash".to_string(),
         temperature: Some(DEFAULT_CHAT_TEMPERATURE),
         max_output_tokens: Some(DEFAULT_CHAT_MAX_OUTPUT_TOKENS),
         max_input_tokens: Some(1000000),
+        thinking_level: Some(ThinkingLevel::Medium),
+        include_thoughts: Some(true),
     }
 }
 
@@ -364,6 +366,8 @@ fn default_classification_model() -> ModelSettings {
         temperature: Some(DEFAULT_CLASSIFICATION_TEMPERATURE),
         max_output_tokens: Some(DEFAULT_CLASSIFICATION_MAX_OUTPUT_TOKENS),
         max_input_tokens: Some(1000000),
+        thinking_level: Some(ThinkingLevel::Minimal),
+        include_thoughts: Some(false),
     }
 }
 
@@ -373,16 +377,46 @@ fn default_imagen_model() -> ModelSettings {
         temperature: None,
         max_output_tokens: None,
         max_input_tokens: None,
+        thinking_level: None,
+        include_thoughts: None,
     }
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ThinkingLevel {
+    Minimal,
+    Low,
+    Medium,
+    High,
+}
+
+impl Default for ThinkingLevel {
+    fn default() -> Self {
+        Self::Medium
+    }
+}
+
+impl std::fmt::Display for ThinkingLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Minimal => write!(f, "MINIMAL"),
+            Self::Low => write!(f, "LOW"),
+            Self::Medium => write!(f, "MEDIUM"),
+            Self::High => write!(f, "HIGH"),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ModelSettings {
     pub name: String,
     pub temperature: Option<f32>,
     pub max_output_tokens: Option<i32>,
     pub max_input_tokens: Option<i32>,
+    pub thinking_level: Option<ThinkingLevel>,
+    pub include_thoughts: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
