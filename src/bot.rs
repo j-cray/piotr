@@ -33,6 +33,7 @@ impl SessionManager {
         ai_client: VertexClient,
         bot_number: String,
         profile_manager: DbProfileManager,
+        memory: Memory,
         config: std::sync::Arc<crate::config::AppConfig>,
     ) -> Self {
         Self {
@@ -40,7 +41,7 @@ impl SessionManager {
             ai_client,
             state: StateManager::new(),
             bot_number,
-            memory: Memory::new("data/learned_behaviors.json"),
+            memory,
             profile_manager,
             config,
         }

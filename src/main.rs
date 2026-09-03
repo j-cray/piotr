@@ -30,10 +30,21 @@ async fn main() -> anyhow::Result<()> {
         &config.security.profile_encryption_key,
     )?;
 
+    // Initialize Memory
+    let memory = ai::memory::Memory::new(
+        db.pool.clone(),
+        &config.security.profile_encryption_key,
+    )?;
+
     // Migrate existing profiles (if any)
     if let Err(e) = profile_manager.migrate_json_profiles("data/profiles").await {
         tracing::warn!("Failed to migrate profiles: {:?}", e);
         // Continue anyway, maybe folder doesn't exist
+    }
+
+    // Migrate existing learned behaviors (if any)
+    if let Err(e) = memory.migrate_json_file("data/learned_behaviors.json").await {
+        tracing::warn!("Failed to migrate learned behaviors: {:?}", e);
     }
 
     // Initialize AI client
@@ -67,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
         ai_client,
         bot_number,
         profile_manager,
+        memory,
         config.clone(),
     );
 

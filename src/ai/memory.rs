@@ -7,9 +7,47 @@ use chacha20poly1305::{
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use std::fs;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+
+fn encrypt_blob(encryption_key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>> {
+    let cipher = XChaCha20Poly1305::new(encryption_key.into());
+    let mut nonce_bytes = [0u8; 24];
+    rand::rng().fill_bytes(&mut nonce_bytes);
+    let nonce = XNonce::from_slice(&nonce_bytes);
+
+    let ciphertext = cipher
+        .encrypt(nonce, data)
+        .map_err(|e| anyhow::anyhow!("Encryption failure: {:?}", e))?;
+
+    // Prepend nonce to ciphertext
+    let mut result = nonce_bytes.to_vec();
+    result.extend(ciphertext);
+    Ok(result)
+}
+
+fn decrypt_blob(encryption_key: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>> {
+    if blob.len() < 24 {
+        anyhow::bail!("Encrypted blob too short");
+    }
+    let nonce_bytes = &blob[..24];
+    let ciphertext = &blob[24..];
+    let nonce = XNonce::from_slice(nonce_bytes);
+
+    let cipher = XChaCha20Poly1305::new(encryption_key.into());
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| anyhow::anyhow!("Decryption failure: {:?}", e))?;
+
+    Ok(plaintext)
+}
+
+fn compute_interaction_hash(prompt: &str, response: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(prompt.as_bytes());
+    hasher.update(b":::");
+    hasher.update(response.as_bytes());
+    hex::encode(hasher.finalize())
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Interaction {
@@ -23,22 +61,39 @@ pub struct Interaction {
 
 #[derive(Clone)]
 pub struct Memory {
-    file_path: String,
-    interactions: Arc<Mutex<Vec<Interaction>>>,
+    pool: SqlitePool,
+    encryption_key: [u8; 32],
 }
 
 impl Memory {
-    pub fn new(file_path: &str) -> Self {
-        let interactions = if let Ok(content) = fs::read_to_string(file_path) {
-            serde_json::from_str(&content).unwrap_or_else(|_| Vec::new())
-        } else {
-            Vec::new()
-        };
-
-        Self {
-            file_path: file_path.to_string(),
-            interactions: Arc::new(Mutex::new(interactions)),
+    pub fn new(pool: SqlitePool, key_hex: &str) -> Result<Self> {
+        let key_bytes =
+            hex::decode(key_hex).context("Failed to decode PROFILE_ENCRYPTION_KEY hex")?;
+        if key_bytes.len() != 32 {
+            anyhow::bail!("PROFILE_ENCRYPTION_KEY must be 32 bytes (64 hex chars)");
         }
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&key_bytes);
+
+        Ok(Self {
+            pool,
+            encryption_key: key,
+        })
+    }
+
+    pub fn from_key(pool: SqlitePool, encryption_key: [u8; 32]) -> Self {
+        Self {
+            pool,
+            encryption_key,
+        }
+    }
+
+    pub fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
+        encrypt_blob(&self.encryption_key, data)
+    }
+
+    pub fn decrypt(&self, blob: &[u8]) -> Result<Vec<u8>> {
+        decrypt_blob(&self.encryption_key, blob)
     }
 
     pub async fn add_interaction(
@@ -50,27 +105,38 @@ impl Memory {
     ) -> Result<()> {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
-            .as_millis() as u64;
+            .as_millis() as i64;
 
-        let mut guard = self.interactions.lock().await;
+        let interaction_hash = compute_interaction_hash(&prompt, &response);
+        let sentiment_score = analysis.sentiment_score;
 
-        if let Some(existing) = guard
-            .iter_mut()
-            .find(|i| i.context_key == context_key && i.prompt == prompt && i.response == response)
-        {
-            existing.analysis = analysis;
-            existing.timestamp = timestamp;
-        } else {
-            guard.push(Interaction {
-                context_key: context_key.to_string(),
-                prompt,
-                response,
-                analysis,
-                timestamp,
-            });
-        }
+        let interaction = Interaction {
+            context_key: context_key.to_string(),
+            prompt,
+            response,
+            analysis,
+            timestamp: timestamp as u64,
+        };
 
-        self.save(&guard).await?;
+        let json = serde_json::to_vec(&interaction)?;
+        let encrypted_blob = self.encrypt(&json)?;
+
+        sqlx::query(
+            "INSERT INTO learned_behaviors (context_key, interaction_hash, sentiment_score, encrypted_blob, timestamp)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(context_key, interaction_hash) DO UPDATE SET
+                 sentiment_score = excluded.sentiment_score,
+                 encrypted_blob = excluded.encrypted_blob,
+                 timestamp = excluded.timestamp"
+        )
+        .bind(context_key)
+        .bind(&interaction_hash)
+        .bind(sentiment_score)
+        .bind(encrypted_blob)
+        .bind(timestamp)
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -80,25 +146,87 @@ impl Memory {
         _query: &str,
         limit: usize,
     ) -> Vec<Interaction> {
-        let guard = self.interactions.lock().await;
-        // Filter strictly by context_key to isolate memories per chat
-        let mut sorted: Vec<Interaction> = guard
-            .iter()
-            .filter(|i| i.context_key == context_key)
-            .cloned()
-            .collect();
-        sorted.sort_by(|a, b| {
-            b.analysis
-                .sentiment_score
-                .partial_cmp(&a.analysis.sentiment_score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        sorted.into_iter().take(limit).collect()
+        let rows: Result<Vec<(Vec<u8>, i64)>, _> = sqlx::query_as(
+            "SELECT encrypted_blob, timestamp FROM learned_behaviors
+             WHERE context_key = ?
+             ORDER BY sentiment_score DESC
+             LIMIT ?"
+        )
+        .bind(context_key)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await;
+
+        let rows = match rows {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("Failed to fetch relevant examples: {:?}", e);
+                return Vec::new();
+            }
+        };
+
+        let mut examples = Vec::new();
+        for (blob, timestamp) in rows {
+            match self.decrypt(&blob) {
+                Ok(plaintext) => match serde_json::from_slice::<Interaction>(&plaintext) {
+                    Ok(mut interaction) => {
+                        interaction.context_key = context_key.to_string();
+                        interaction.timestamp = timestamp as u64;
+                        examples.push(interaction);
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to deserialize interaction payload: {:?}", e);
+                    }
+                },
+                Err(e) => {
+                    tracing::error!("Failed to decrypt interaction blob: {:?}", e);
+                }
+            }
+        }
+
+        examples
     }
 
-    async fn save(&self, interactions: &[Interaction]) -> Result<()> {
-        let json = serde_json::to_string_pretty(interactions)?;
-        tokio::fs::write(&self.file_path, json).await?;
+    pub async fn migrate_json_file(&self, file_path: &str) -> Result<()> {
+        let path = std::path::Path::new(file_path);
+        if !path.exists() {
+            return Ok(());
+        }
+
+        let content = tokio::fs::read_to_string(path).await?;
+        let interactions: Vec<Interaction> = match serde_json::from_str(&content) {
+            Ok(items) => items,
+            Err(e) => {
+                tracing::warn!("Could not parse {:?} as JSON interaction list: {:?}", path, e);
+                return Ok(());
+            }
+        };
+
+        tracing::info!(
+            "Migrating {} learned behaviors from {:?} to SQLite",
+            interactions.len(),
+            path
+        );
+        for item in interactions {
+            if let Err(e) = self
+                .add_interaction(
+                    &item.context_key,
+                    item.prompt,
+                    item.response,
+                    item.analysis,
+                )
+                .await
+            {
+                tracing::error!("Failed to migrate learned behavior item: {:?}", e);
+            }
+        }
+
+        let new_path = path.with_extension("json.imported");
+        let _ = tokio::fs::rename(path, new_path).await;
+        tracing::info!(
+            "Successfully migrated learned behaviors and renamed to {:?}",
+            path.with_extension("json.imported")
+        );
         Ok(())
     }
 }
@@ -155,35 +283,11 @@ impl DbProfileManager {
     }
 
     fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let cipher = XChaCha20Poly1305::new(&self.encryption_key.into());
-        let mut nonce_bytes = [0u8; 24];
-        rand::rng().fill_bytes(&mut nonce_bytes);
-        let nonce = XNonce::from_slice(&nonce_bytes);
-
-        let ciphertext = cipher
-            .encrypt(nonce, data)
-            .map_err(|e| anyhow::anyhow!("Encryption failure: {:?}", e))?;
-
-        // Prepend nonce to ciphertext
-        let mut result = nonce_bytes.to_vec();
-        result.extend(ciphertext);
-        Ok(result)
+        encrypt_blob(&self.encryption_key, data)
     }
 
     fn decrypt(&self, blob: &[u8]) -> Result<Vec<u8>> {
-        if blob.len() < 24 {
-            anyhow::bail!("Encrypted blob too short");
-        }
-        let nonce_bytes = &blob[..24];
-        let ciphertext = &blob[24..];
-        let nonce = XNonce::from_slice(nonce_bytes);
-
-        let cipher = XChaCha20Poly1305::new(&self.encryption_key.into());
-        let plaintext = cipher
-            .decrypt(nonce, ciphertext)
-            .map_err(|e| anyhow::anyhow!("Decryption failure: {:?}", e))?;
-
-        Ok(plaintext)
+        decrypt_blob(&self.encryption_key, blob)
     }
 
     pub async fn get_profile(
@@ -342,7 +446,6 @@ impl DbProfileManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::RngExt;
 
     #[test]
     fn test_profile_id_generation() {
@@ -535,16 +638,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_memory_invalid_file_graceful_handling() {
-        let mem = Memory::new("/tmp/this_file_definitely_does_not_exist_123.json");
+    async fn test_memory_empty_db_graceful_handling() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
+
+        let mem = Memory::from_key(pool, [1u8; 32]);
         let examples = mem.get_relevant_examples("chat1", "", 10).await;
         assert_eq!(examples.len(), 0);
     }
 
     #[tokio::test]
     async fn test_memory_context_isolation() {
-        let temp_file = format!("/tmp/test_memory_iso_{}.json", rand::rng().random::<u64>());
-        let mem = Memory::new(&temp_file);
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
+
+        let mem = Memory::from_key(pool.clone(), [1u8; 32]);
 
         let analysis_chat1 = ReactionAnalysis {
             sentiment_score: 0.9,
@@ -593,8 +701,8 @@ mod tests {
         let examples_c = mem.get_relevant_examples("group_c", "", 10).await;
         assert_eq!(examples_c.len(), 0);
 
-        // Verify persistence round-trip preserves isolation
-        let reloaded_mem = Memory::new(&temp_file);
+        // Verify persistence with a new instance sharing the same pool preserves isolation
+        let reloaded_mem = Memory::from_key(pool, [1u8; 32]);
         let reloaded_a = reloaded_mem.get_relevant_examples("group_a", "", 10).await;
         assert_eq!(reloaded_a.len(), 1);
         assert_eq!(reloaded_a[0].prompt, "Secret from Group A");
@@ -602,7 +710,84 @@ mod tests {
         let reloaded_b = reloaded_mem.get_relevant_examples("group_b", "", 10).await;
         assert_eq!(reloaded_b.len(), 1);
         assert_eq!(reloaded_b[0].prompt, "Secret from Group B");
+    }
 
-        let _ = tokio::fs::remove_file(temp_file).await;
+    #[tokio::test]
+    async fn test_memory_upsert_deduplication() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
+
+        let mem = Memory::from_key(pool, [1u8; 32]);
+
+        let analysis_v1 = ReactionAnalysis {
+            sentiment_score: 0.5,
+            reasoning: "Okay response".to_string(),
+            tags: vec!["meh".to_string()],
+        };
+        mem.add_interaction(
+            "chat1",
+            "What is 2+2?".to_string(),
+            "4".to_string(),
+            analysis_v1,
+        )
+        .await
+        .unwrap();
+
+        let analysis_v2 = ReactionAnalysis {
+            sentiment_score: 1.0,
+            reasoning: "Loved it".to_string(),
+            tags: vec!["perfect".to_string()],
+        };
+        mem.add_interaction(
+            "chat1",
+            "What is 2+2?".to_string(),
+            "4".to_string(),
+            analysis_v2,
+        )
+        .await
+        .unwrap();
+
+        let examples = mem.get_relevant_examples("chat1", "", 10).await;
+        assert_eq!(examples.len(), 1);
+        assert_eq!(examples[0].analysis.sentiment_score, 1.0);
+        assert_eq!(examples[0].analysis.reasoning, "Loved it");
+    }
+
+    #[tokio::test]
+    async fn test_memory_json_migration() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
+
+        let mem = Memory::from_key(pool, [1u8; 32]);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let json_file = temp_dir.path().join("learned_behaviors.json");
+        let sample_json = r#"[
+            {
+                "context_key": "imported_chat",
+                "prompt": "Hello",
+                "response": "Hi there!",
+                "analysis": {
+                    "sentiment_score": 0.95,
+                    "reasoning": "Friendly greeting",
+                    "tags": ["friendly"]
+                },
+                "timestamp": 1234567890
+            }
+        ]"#;
+        tokio::fs::write(&json_file, sample_json).await.unwrap();
+
+        mem.migrate_json_file(json_file.to_str().unwrap()).await.unwrap();
+
+        // Check that json was renamed to .json.imported
+        assert!(!json_file.exists());
+        assert!(temp_dir.path().join("learned_behaviors.json.imported").exists());
+
+        // Check that the interaction was imported into SQLite
+        let examples = mem.get_relevant_examples("imported_chat", "", 10).await;
+        assert_eq!(examples.len(), 1);
+        assert_eq!(examples[0].prompt, "Hello");
+        assert_eq!(examples[0].response, "Hi there!");
+        assert_eq!(examples[0].analysis.sentiment_score, 0.95);
     }
 }
