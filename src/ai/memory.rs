@@ -150,7 +150,7 @@ impl Memory {
             "SELECT encrypted_blob, timestamp FROM learned_behaviors
              WHERE context_key = ?
              ORDER BY sentiment_score DESC
-             LIMIT ?"
+             LIMIT ?",
         )
         .bind(context_key)
         .bind(limit as i64)
@@ -197,7 +197,11 @@ impl Memory {
         let interactions: Vec<Interaction> = match serde_json::from_str(&content) {
             Ok(items) => items,
             Err(e) => {
-                tracing::warn!("Could not parse {:?} as JSON interaction list: {:?}", path, e);
+                tracing::warn!(
+                    "Could not parse {:?} as JSON interaction list: {:?}",
+                    path,
+                    e
+                );
                 return Ok(());
             }
         };
@@ -209,12 +213,7 @@ impl Memory {
         );
         for item in interactions {
             if let Err(e) = self
-                .add_interaction(
-                    &item.context_key,
-                    item.prompt,
-                    item.response,
-                    item.analysis,
-                )
+                .add_interaction(&item.context_key, item.prompt, item.response, item.analysis)
                 .await
             {
                 tracing::error!("Failed to migrate learned behavior item: {:?}", e);
@@ -777,11 +776,18 @@ mod tests {
         ]"#;
         tokio::fs::write(&json_file, sample_json).await.unwrap();
 
-        mem.migrate_json_file(json_file.to_str().unwrap()).await.unwrap();
+        mem.migrate_json_file(json_file.to_str().unwrap())
+            .await
+            .unwrap();
 
         // Check that json was renamed to .json.imported
         assert!(!json_file.exists());
-        assert!(temp_dir.path().join("learned_behaviors.json.imported").exists());
+        assert!(
+            temp_dir
+                .path()
+                .join("learned_behaviors.json.imported")
+                .exists()
+        );
 
         // Check that the interaction was imported into SQLite
         let examples = mem.get_relevant_examples("imported_chat", "", 10).await;

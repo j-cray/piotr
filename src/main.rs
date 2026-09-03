@@ -31,10 +31,7 @@ async fn main() -> anyhow::Result<()> {
     )?;
 
     // Initialize Memory
-    let memory = ai::memory::Memory::new(
-        db.pool.clone(),
-        &config.security.profile_encryption_key,
-    )?;
+    let memory = ai::memory::Memory::new(db.pool.clone(), &config.security.profile_encryption_key)?;
 
     // Migrate existing profiles (if any)
     if let Err(e) = profile_manager.migrate_json_profiles("data/profiles").await {
@@ -43,7 +40,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Migrate existing learned behaviors (if any)
-    if let Err(e) = memory.migrate_json_file("data/learned_behaviors.json").await {
+    if let Err(e) = memory
+        .migrate_json_file("data/learned_behaviors.json")
+        .await
+    {
         tracing::warn!("Failed to migrate learned behaviors: {:?}", e);
     }
 

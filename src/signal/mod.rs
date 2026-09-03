@@ -717,19 +717,25 @@ pub fn detect_signal_phone_number(data_path: &str) -> Result<String> {
     }
 
     let accounts_json = std::fs::read_to_string(&accounts_path).map_err(|e| {
-        anyhow::anyhow!("Failed to read accounts file {}: {}", accounts_path.display(), e)
+        anyhow::anyhow!(
+            "Failed to read accounts file {}: {}",
+            accounts_path.display(),
+            e
+        )
     })?;
 
     let accounts_val: Value = serde_json::from_str(&accounts_json).map_err(|e| {
-        anyhow::anyhow!("accounts.json at {} is not valid JSON: {}", accounts_path.display(), e)
+        anyhow::anyhow!(
+            "accounts.json at {} is not valid JSON: {}",
+            accounts_path.display(),
+            e
+        )
     })?;
 
     let accounts_arr = accounts_val
         .get("accounts")
         .and_then(|v| v.as_array())
-        .ok_or_else(|| {
-            anyhow::anyhow!("'accounts' array not found or invalid in accounts.json")
-        })?;
+        .ok_or_else(|| anyhow::anyhow!("'accounts' array not found or invalid in accounts.json"))?;
 
     if accounts_arr.is_empty() {
         anyhow::bail!("No Signal accounts found in accounts.json. Please link a device first.");
@@ -744,22 +750,21 @@ pub fn detect_signal_phone_number(data_path: &str) -> Result<String> {
             .get("number")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let path = acc
-            .get("path")
-            .and_then(|v| v.as_str());
+        let path = acc.get("path").and_then(|v| v.as_str());
 
         if let Some(num) = number {
             if let Some(p) = path {
                 let account_file = base_path.join("data").join(p);
-                if account_file.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&account_file) {
-                        if let Ok(acc_data) = serde_json::from_str::<Value>(&content) {
-                            if acc_data.get("registered").and_then(|r| r.as_bool()).unwrap_or(false) {
-                                registered_candidates.push(num.clone());
-                                continue;
-                            }
-                        }
-                    }
+                if account_file.exists()
+                    && let Ok(content) = std::fs::read_to_string(&account_file)
+                    && let Ok(acc_data) = serde_json::from_str::<Value>(&content)
+                    && acc_data
+                        .get("registered")
+                        .and_then(|r| r.as_bool())
+                        .unwrap_or(false)
+                {
+                    registered_candidates.push(num.clone());
+                    continue;
                 }
             }
             fallback_candidates.push(num);
@@ -786,7 +791,6 @@ pub fn detect_signal_phone_number(data_path: &str) -> Result<String> {
 
     anyhow::bail!("Could not detect any valid phone number in accounts.json")
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1095,4 +1099,3 @@ mod tests {
         assert!(res.is_err());
     }
 }
-

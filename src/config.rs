@@ -382,19 +382,14 @@ fn default_imagen_model() -> ModelSettings {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ThinkingLevel {
     Minimal,
     Low,
+    #[default]
     Medium,
     High,
-}
-
-impl Default for ThinkingLevel {
-    fn default() -> Self {
-        Self::Medium
-    }
 }
 
 impl std::fmt::Display for ThinkingLevel {

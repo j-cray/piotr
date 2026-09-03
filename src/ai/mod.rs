@@ -443,10 +443,14 @@ impl VertexClient {
                     if let Some(content) = &first.content {
                         // Log thought parts for tracing/observability
                         for (idx, p) in content.parts.iter().enumerate() {
-                            if p.thought == Some(true) {
-                                if let Some(thought_text) = &p.text {
-                                    tracing::debug!("Reasoning thought [part {}]: {}", idx, thought_text);
-                                }
+                            if p.thought == Some(true)
+                                && let Some(thought_text) = &p.text
+                            {
+                                tracing::debug!(
+                                    "Reasoning thought [part {}]: {}",
+                                    idx,
+                                    thought_text
+                                );
                             }
                         }
 
@@ -1242,7 +1246,10 @@ mod tests {
         let prompt_direct = "SYSTEM: Analyze if the user is talking *to* you or just talking *about* you. Reply IGNORE if they are mentioning you in passing to someone else without expecting a response. If they are addressing you directly (e.g. just '@Piotr' or asking a question), categorize the intent normally as FLASH, SEARCH, PRO, or IMAGE. User prompt: @Piotr";
         match client.classify_intent(prompt_direct).await {
             Ok(decision) => {
-                println!("Direct invocation intent: {} ({:?})", decision.intent, decision.thinking_level);
+                println!(
+                    "Direct invocation intent: {} ({:?})",
+                    decision.intent, decision.thinking_level
+                );
                 assert_ne!(decision.intent, "IGNORE");
             }
             Err(e) => panic!("Classification failed: {:?}", e),
@@ -1252,7 +1259,10 @@ mod tests {
         let prompt_passing = "SYSTEM: Analyze if the user is talking *to* you or just talking *about* you. Reply IGNORE if they are mentioning you in passing to someone else without expecting a response. If they are addressing you directly (e.g. just '@Piotr' or asking a question), categorize the intent normally as FLASH, SEARCH, PRO, or IMAGE. User prompt: I think @Piotr is broken";
         match client.classify_intent(prompt_passing).await {
             Ok(decision) => {
-                println!("Passing mention intent: {} ({:?})", decision.intent, decision.thinking_level);
+                println!(
+                    "Passing mention intent: {} ({:?})",
+                    decision.intent, decision.thinking_level
+                );
                 assert_eq!(decision.intent, "IGNORE");
             }
             Err(e) => panic!("Classification failed: {:?}", e),
@@ -1269,7 +1279,10 @@ mod tests {
         let json_str_flash = r#"{"intent": "FLASH", "thinking_level": "MINIMAL"}"#;
         let decision_flash: ClassificationDecision = serde_json::from_str(json_str_flash).unwrap();
         assert_eq!(decision_flash.intent, "FLASH");
-        assert_eq!(decision_flash.thinking_level, crate::config::ThinkingLevel::Minimal);
+        assert_eq!(
+            decision_flash.thinking_level,
+            crate::config::ThinkingLevel::Minimal
+        );
     }
 
     #[test]
@@ -1312,7 +1325,10 @@ mod tests {
             .filter(|p| p.thought == Some(true))
             .filter_map(|p| p.text.as_deref())
             .collect();
-        assert_eq!(thoughts, vec!["Let me think through this query carefully..."]);
+        assert_eq!(
+            thoughts,
+            vec!["Let me think through this query carefully..."]
+        );
 
         // Ensure text answers are aggregated
         let answer_parts: Vec<&str> = content
@@ -1321,7 +1337,10 @@ mod tests {
             .filter(|p| p.thought != Some(true))
             .filter_map(|p| p.text.as_deref())
             .collect();
-        assert_eq!(answer_parts.join(""), "Here is the first paragraph.\n\nHere is the second paragraph.");
+        assert_eq!(
+            answer_parts.join(""),
+            "Here is the first paragraph.\n\nHere is the second paragraph."
+        );
 
         // Check grounding metadata extraction
         let grounding = candidate.grounding_metadata.as_ref().unwrap();

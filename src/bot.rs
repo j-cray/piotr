@@ -375,10 +375,7 @@ impl SessionManager {
             ) // Disable search by default for overrides
         } else {
             // Unified model: Always use chat model (gemini-3.8-flash) for all text responses
-            (
-                self.config.ai.models.chat.clone(),
-                intent == "SEARCH",
-            )
+            (self.config.ai.models.chat.clone(), intent == "SEARCH")
         };
 
         // Build comprehensive system instruction without polluting conversation turns
