@@ -5,6 +5,7 @@ A privacy-focused, self-hosted AI assistant for Signal, built with Gemini, Qdran
 
 - **Signal Integration**: Listen to and send messages directly via Signal-CLI.
 - **Context-Aware AI**: Uses Gemini for intelligent responses and maintains conversation history.
+- **Session Management**: Configurable session reset timer (default 2h) to minimize token consumption across conversations.
 - **Memory System**: Learns from past conversations and user interactions.
 - **Profile Management**: Keeps track of individual user preferences and details.
 - **Group Chat Support**: Fully functional in group chats with proper context handling.

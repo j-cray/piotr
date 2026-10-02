@@ -36,10 +36,23 @@ impl SessionManager {
         memory: Memory,
         config: std::sync::Arc<crate::config::AppConfig>,
     ) -> Self {
+        let session_timeout_secs = config.session_reset_timeout_secs();
+        if session_timeout_secs > 0 {
+            info!(
+                "Session reset timer initialized: {}s ({}h {}m)",
+                session_timeout_secs,
+                session_timeout_secs / 3600,
+                (session_timeout_secs % 3600) / 60
+            );
+        } else {
+            info!("Session reset timer disabled (unlimited session duration)");
+        }
+        let session_timeout = std::time::Duration::from_secs(session_timeout_secs);
+
         Self {
             signal_client,
             ai_client,
-            state: StateManager::new(),
+            state: StateManager::with_session_timeout(session_timeout),
             bot_number,
             memory,
             profile_manager,

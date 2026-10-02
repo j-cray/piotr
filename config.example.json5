@@ -74,5 +74,9 @@
   //   enableMessageSplitting: true,
   //   enableParagraphSplitting: true,
   //   messageDelayMs: 100,
+  //   // Inactivity timer before conversation session history is reset to save tokens.
+  //   // Supports duration strings (e.g. "2h", "90m", "7200s") or raw seconds.
+  //   // Default: 2h (7200 seconds). Set to 0 to disable automatic session reset.
+  //   sessionResetTimer: "2h",
   // },
 }

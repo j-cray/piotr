@@ -111,6 +111,16 @@ impl AppConfig {
         Ok(app_config)
     }
 
+    pub fn session_reset_timeout_secs(&self) -> u64 {
+        self.performance
+            .session_reset_timeout_secs
+            .unwrap_or(self.bot.session_reset_timeout_secs)
+    }
+
+    pub fn session_reset_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.session_reset_timeout_secs())
+    }
+
     fn load_and_resolve_includes(path: &Path, depth: usize) -> Result<Value> {
         if depth > 10 {
             anyhow::bail!(
@@ -429,12 +439,183 @@ impl Default for SignalConfig {
     }
 }
 
+pub const DEFAULT_SESSION_RESET_TIMEOUT_SECS: u64 = 7200; // 2 hours
+
+pub fn parse_duration_string(s: &str) -> Result<u64, String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Ok(0);
+    }
+    if let Ok(v) = trimmed.parse::<u64>() {
+        return Ok(v);
+    }
+
+    let mut total_secs: u64 = 0;
+    let mut chars = trimmed.chars().peekable();
+    let mut found_any = false;
+
+    while chars.peek().is_some() {
+        // Skip whitespace and commas
+        while let Some(&c) = chars.peek() {
+            if c.is_whitespace() || c == ',' {
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        if chars.peek().is_none() {
+            break;
+        }
+
+        // Parse digits
+        let mut num_str = String::new();
+        while let Some(&c) = chars.peek() {
+            if c.is_ascii_digit() {
+                num_str.push(c);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+
+        if num_str.is_empty() {
+            return Err(format!("Expected number in duration '{}'", trimmed));
+        }
+
+        let val: u64 = num_str
+            .parse()
+            .map_err(|e| format!("Failed to parse number in duration '{}': {}", trimmed, e))?;
+
+        // Skip whitespace between number and unit (e.g. "2 hours")
+        while let Some(&c) = chars.peek() {
+            if c.is_whitespace() {
+                chars.next();
+            } else {
+                break;
+            }
+        }
+
+        // Parse unit letters
+        let mut unit_str = String::new();
+        while let Some(&c) = chars.peek() {
+            if c.is_alphabetic() {
+                unit_str.push(c.to_ascii_lowercase());
+                chars.next();
+            } else {
+                break;
+            }
+        }
+
+        let multiplier = match unit_str.as_str() {
+            "" | "s" | "sec" | "secs" | "second" | "seconds" => 1,
+            "m" | "min" | "mins" | "minute" | "minutes" => 60,
+            "h" | "hr" | "hrs" | "hour" | "hours" => 3600,
+            "d" | "day" | "days" => 86400,
+            other => return Err(format!("Unknown time unit '{}' in duration '{}'", other, trimmed)),
+        };
+
+        let product = val
+            .checked_mul(multiplier)
+            .ok_or_else(|| format!("Duration overflow in '{}'", trimmed))?;
+        total_secs = total_secs
+            .checked_add(product)
+            .ok_or_else(|| format!("Duration overflow in '{}'", trimmed))?;
+
+        found_any = true;
+    }
+
+    if !found_any {
+        Err(format!("Invalid duration '{}'", trimmed))
+    } else {
+        Ok(total_secs)
+    }
+}
+
+pub fn deserialize_duration_or_secs<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct DurationOrSecsVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for DurationOrSecsVisitor {
+        type Value = u64;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str(
+                "an integer number of seconds or a duration string like '2h', '30m', '7200s'",
+            )
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(value)
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            if value < 0 {
+                Err(E::custom("duration cannot be negative"))
+            } else {
+                Ok(value as u64)
+            }
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            parse_duration_string(value).map_err(E::custom)
+        }
+    }
+
+    deserializer.deserialize_any(DurationOrSecsVisitor)
+}
+
+pub fn deserialize_optional_duration_or_secs<'de, D>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum DurationOrNumber {
+        Num(u64),
+        Str(String),
+    }
+
+    let opt = Option::<DurationOrNumber>::deserialize(deserializer)?;
+    match opt {
+        None => Ok(None),
+        Some(DurationOrNumber::Num(n)) => Ok(Some(n)),
+        Some(DurationOrNumber::Str(s)) => {
+            parse_duration_string(&s).map(Some).map_err(serde::de::Error::custom)
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PerformanceConfig {
     pub max_concurrent_requests: usize,
     pub message_processing_timeout_secs: u64,
     pub api_cooldown_ms: u64,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_duration_or_secs",
+        alias = "sessionResetTimerSecs",
+        alias = "sessionResetTimer",
+        alias = "sessionTimeoutSecs",
+        alias = "session_reset_timeout_secs",
+        alias = "session_reset_timer_secs",
+        alias = "session_reset_timer",
+        alias = "session_timeout_secs"
+    )]
+    pub session_reset_timeout_secs: Option<u64>,
 }
 
 impl Default for PerformanceConfig {
@@ -443,8 +624,13 @@ impl Default for PerformanceConfig {
             max_concurrent_requests: 10,
             message_processing_timeout_secs: 30,
             api_cooldown_ms: 1500,
+            session_reset_timeout_secs: None,
         }
     }
+}
+
+fn default_session_reset_timeout_secs() -> u64 {
+    DEFAULT_SESSION_RESET_TIMEOUT_SECS
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -457,6 +643,18 @@ pub struct BotConfig {
     pub enable_message_splitting: bool,
     pub enable_paragraph_splitting: bool,
     pub message_delay_ms: u64,
+    #[serde(
+        default = "default_session_reset_timeout_secs",
+        deserialize_with = "deserialize_duration_or_secs",
+        alias = "sessionResetTimerSecs",
+        alias = "sessionResetTimer",
+        alias = "sessionTimeoutSecs",
+        alias = "session_reset_timeout_secs",
+        alias = "session_reset_timer_secs",
+        alias = "session_reset_timer",
+        alias = "session_timeout_secs"
+    )]
+    pub session_reset_timeout_secs: u64,
 }
 
 impl Default for BotConfig {
@@ -469,6 +667,7 @@ impl Default for BotConfig {
             enable_message_splitting: true,
             enable_paragraph_splitting: true,
             message_delay_ms: 100,
+            session_reset_timeout_secs: DEFAULT_SESSION_RESET_TIMEOUT_SECS,
         }
     }
 }
@@ -526,6 +725,8 @@ mod tests {
         assert_eq!(app_config.performance.max_concurrent_requests, 5);
         assert_eq!(app_config.performance.message_processing_timeout_secs, 10);
         assert_eq!(app_config.bot.name, "TestBot");
+        assert_eq!(app_config.bot.session_reset_timeout_secs, 7200);
+        assert_eq!(app_config.session_reset_timeout_secs(), 7200);
     }
 
     #[test]
@@ -704,5 +905,85 @@ mod tests {
                 .to_string()
                 .contains("MissingEnvVarError: MISSING_DB_URL_12345")
         );
+    }
+
+    #[test]
+    fn test_parse_duration_string() {
+        assert_eq!(parse_duration_string("").unwrap(), 0);
+        assert_eq!(parse_duration_string("0").unwrap(), 0);
+        assert_eq!(parse_duration_string("7200").unwrap(), 7200);
+        assert_eq!(parse_duration_string("30s").unwrap(), 30);
+        assert_eq!(parse_duration_string("30 seconds").unwrap(), 30);
+        assert_eq!(parse_duration_string("15m").unwrap(), 900);
+        assert_eq!(parse_duration_string("15 minutes").unwrap(), 900);
+        assert_eq!(parse_duration_string("2h").unwrap(), 7200);
+        assert_eq!(parse_duration_string("2 hours").unwrap(), 7200);
+        assert_eq!(parse_duration_string("1h 30m").unwrap(), 5400);
+        assert_eq!(parse_duration_string("2h 15m 10s").unwrap(), 8110);
+        assert_eq!(parse_duration_string("1d").unwrap(), 86400);
+
+        assert!(parse_duration_string("invalid").is_err());
+        assert!(parse_duration_string("2x").is_err());
+    }
+
+    #[test]
+    fn test_session_reset_timer_deserialization() {
+        // String duration in bot
+        let json_str = r#"
+        {
+            bot: {
+                sessionResetTimer: "2h"
+            }
+        }
+        "#;
+        let cfg = config::Config::builder()
+            .add_source(config::File::from_str(json_str, config::FileFormat::Json5))
+            .build()
+            .unwrap();
+        let app_cfg: AppConfig = cfg.try_deserialize().unwrap();
+        assert_eq!(app_cfg.bot.session_reset_timeout_secs, 7200);
+        assert_eq!(app_cfg.session_reset_timeout_secs(), 7200);
+
+        // Number in bot
+        let json_str = r#"
+        {
+            bot: {
+                sessionResetTimeoutSecs: 3600
+            }
+        }
+        "#;
+        let cfg = config::Config::builder()
+            .add_source(config::File::from_str(json_str, config::FileFormat::Json5))
+            .build()
+            .unwrap();
+        let app_cfg: AppConfig = cfg.try_deserialize().unwrap();
+        assert_eq!(app_cfg.bot.session_reset_timeout_secs, 3600);
+        assert_eq!(app_cfg.session_reset_timeout_secs(), 3600);
+
+        // Override from performance
+        let json_str = r#"
+        {
+            bot: {
+                sessionResetTimer: "2h"
+            },
+            performance: {
+                sessionResetTimer: "30m"
+            }
+        }
+        "#;
+        let cfg = config::Config::builder()
+            .add_source(config::File::from_str(json_str, config::FileFormat::Json5))
+            .build()
+            .unwrap();
+        let app_cfg: AppConfig = cfg.try_deserialize().unwrap();
+        assert_eq!(app_cfg.bot.session_reset_timeout_secs, 7200);
+        assert_eq!(app_cfg.performance.session_reset_timeout_secs, Some(1800));
+        assert_eq!(app_cfg.session_reset_timeout_secs(), 1800);
+
+        // Default value when unspecified
+        let default_cfg = AppConfig::default();
+        assert_eq!(default_cfg.bot.session_reset_timeout_secs, 7200);
+        assert_eq!(default_cfg.session_reset_timeout_secs(), 7200);
+        assert_eq!(default_cfg.session_reset_timeout(), std::time::Duration::from_secs(7200));
     }
 }
